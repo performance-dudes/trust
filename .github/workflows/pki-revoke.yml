@@ -1,0 +1,173 @@
+name: "PKI: Revoke Certificate"
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_type:
+        description: "What to revoke"
+        required: true
+        type: choice
+        options:
+          - end-entity
+          - issuing-ca
+      target_name:
+        description: "Target cert slug (e.g. 'member-name' or issuer slug 'felixboehm')"
+        required: true
+        type: string
+      issuer:
+        description: "Issuer slug (for end-entity revocation only)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  revoke-end-entity:
+    name: Revoke end-entity certificate
+    if: ${{ inputs.target_type == 'end-entity' }}
+    runs-on: ubuntu-latest
+    environment: pki-${{ inputs.issuer }}
+    env:
+      PASSWORD: ${{ secrets.PKI_PASSWORD }}
+      ISSUING_KEY_B64: ${{ secrets.ISSUING_KEY_ENC_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Revoke
+        run: |
+          source tools/pki.sh
+          TARGET="${{ inputs.target_name }}"
+          ISSUER="${{ inputs.issuer }}"
+          TMPDIR="$(mktemp -d)"
+
+          # Decode encrypted Issuing CA key from environment secret and decrypt
+          printf '%s' "$ISSUING_KEY_B64" | base64 -d > "${TMPDIR}/issuing.key.enc"
+          pki_decrypt "${TMPDIR}/issuing.key.enc" "${TMPDIR}/issuing.key" "$PASSWORD"
+
+          SERIAL="$(openssl x509 -in "pki/certs/${TARGET}.pem" -noout -serial | cut -d= -f2)"
+
+          CRLDIR="$(mktemp -d)"
+          touch "${CRLDIR}/index.txt"
+          echo "$SERIAL" > "${CRLDIR}/crlnumber"
+          printf '%s\tR\t%s\t%s\tunknown\t/CN=%s\n' \
+            "$SERIAL" "$(date -u +%y%m%d%H%M%SZ)" "$(date -u +%y%m%d%H%M%SZ)" "$TARGET" \
+            >> "${CRLDIR}/index.txt"
+
+          openssl ca -gencrl -keyfile "${TMPDIR}/issuing.key" -cert "pki/issuers/${ISSUER}/issuing-cert.pem" \
+            -out "pki/crl/${ISSUER}-crl.pem" -crldays 1825 \
+            -config <(printf '%s\n' \
+              "[ca]" "default_ca = CA_default" \
+              "[CA_default]" \
+              "database = ${CRLDIR}/index.txt" \
+              "crlnumber = ${CRLDIR}/crlnumber" \
+              "default_md = sha256")
+
+          # Remove cert file
+          rm -f "pki/certs/${TARGET}.pem"
+          rm -rf "${CRLDIR}"
+
+          secure_wipe "${TMPDIR}/issuing.key"
+          rm -f "${TMPDIR}/issuing.key.enc"
+          rm -rf "${TMPDIR}"
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET="${{ inputs.target_name }}"
+          ISSUER="${{ inputs.issuer }}"
+          BRANCH="pki/revoke-${TARGET}-$(date +%Y%m%d-%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A pki/certs/ pki/crl/
+          git commit -m "feat: revoke end-entity certificate ${TARGET}"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "feat: revoke end-entity ${TARGET}" \
+            --body "Revoked end-entity certificate: \`${TARGET}\`
+          Issuer: \`${ISSUER}\`
+          CRL updated. Certificate removed. Review before merging."
+
+  revoke-issuing-ca:
+    name: Revoke issuing CA certificate
+    if: ${{ inputs.target_type == 'issuing-ca' }}
+    runs-on: ubuntu-latest
+    environment: pki-root
+    env:
+      PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}
+      PASSWORD_NANTERO1: ${{ secrets.PKI_PASSWORD_NANTERO1 }}
+      ROOT_CA_KEY_B64: ${{ secrets.ROOT_CA_KEY_ENC_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Revoke
+        run: |
+          source tools/pki.sh
+          TARGET="${{ inputs.target_name }}"
+          TMPDIR="$(mktemp -d)"
+
+          # Decode encrypted Root CA key from environment secret and decrypt
+          printf '%s' "$ROOT_CA_KEY_B64" | base64 -d > "${TMPDIR}/root-ca.key.enc"
+          COMBINED=$(derive_combined_passphrase "$PASSWORD_FELIXBOEHM" "$PASSWORD_NANTERO1")
+          pki_decrypt "${TMPDIR}/root-ca.key.enc" "${TMPDIR}/root-ca.key" "$COMBINED"
+
+          # Get serial of the Issuing CA cert
+          SERIAL="$(openssl x509 -in "pki/issuers/${TARGET}/issuing-cert.pem" -noout -serial | cut -d= -f2)"
+
+          # Add to root CRL
+          CRLDIR="$(mktemp -d)"
+          touch "${CRLDIR}/index.txt"
+          echo "$SERIAL" > "${CRLDIR}/crlnumber"
+          printf '%s\tR\t%s\t%s\tunknown\t/CN=Performance Dudes Issuing CA - %s\n' \
+            "$SERIAL" "$(date -u +%y%m%d%H%M%SZ)" "$(date -u +%y%m%d%H%M%SZ)" "$TARGET" \
+            >> "${CRLDIR}/index.txt"
+
+          openssl ca -gencrl -keyfile "${TMPDIR}/root-ca.key" -cert pki/root/ca-cert.pem \
+            -out pki/crl/root-crl.pem -crldays 3650 \
+            -config <(printf '%s\n' \
+              "[ca]" "default_ca = CA_default" \
+              "[CA_default]" \
+              "database = ${CRLDIR}/index.txt" \
+              "crlnumber = ${CRLDIR}/crlnumber" \
+              "default_md = sha256")
+
+          # Remove Issuing CA directory
+          rm -rf "pki/issuers/${TARGET}"
+          rm -rf "${CRLDIR}"
+
+          secure_wipe "${TMPDIR}/root-ca.key"
+          rm -f "${TMPDIR}/root-ca.key.enc"
+          rm -rf "${TMPDIR}"
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET="${{ inputs.target_name }}"
+          BRANCH="pki/revoke-${TARGET}-$(date +%Y%m%d-%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A pki/issuers/ pki/crl/
+          git commit -m "feat: revoke issuing CA certificate ${TARGET}"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "feat: revoke issuing-ca ${TARGET}" \
+            --body "## Summary
+
+          Revoked issuing CA certificate: \`${TARGET}\`
+          Root CRL updated. Issuing CA directory removed from \`pki/issuers/${TARGET}/\`.
+
+          ## Manual follow-up required
+
+          The \`ISSUING_KEY_ENC_B64\` secret in the \`pki-${TARGET}\` GitHub Environment
+          is now orphaned. Delete it manually after merging:
+
+          \`\`\`
+          gh secret delete ISSUING_KEY_ENC_B64 --env pki-${TARGET}
+          \`\`\`
+
+          All partners must review and verify before merging."

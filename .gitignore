@@ -1,0 +1,11 @@
+.DS_Store
+
+# PKI - never commit plaintext or encrypted private keys
+# (Encrypted keys live in GitHub Environment Secrets and the trust-keys repo.)
+*.key
+*.key.pem
+*.key.enc
+pki/**/*.tmp
+
+# Workflow artifacts downloaded locally
+blobs/

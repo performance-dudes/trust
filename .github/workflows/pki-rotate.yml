@@ -1,0 +1,142 @@
+name: "PKI: Rotate Root CA"
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_password_a:
+        description: "felixboehm's new password (update environment secret after rotation)"
+        required: true
+        type: string
+      new_password_b:
+        description: "nantero1's new password (update environment secret after rotation)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  rotate:
+    name: Rotate Root CA
+    runs-on: ubuntu-latest
+    environment: pki-root
+    env:
+      PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}
+      PASSWORD_NANTERO1: ${{ secrets.PKI_PASSWORD_NANTERO1 }}
+      NEW_PASSWORD_FELIXBOEHM: ${{ inputs.new_password_a }}
+      NEW_PASSWORD_NANTERO1: ${{ inputs.new_password_b }}
+      ROOT_CA_KEY_B64: ${{ secrets.ROOT_CA_KEY_ENC_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rotate Root CA
+        run: |
+          source tools/pki.sh
+          TMPDIR="$(mktemp -d)"
+          BLOBS="${GITHUB_WORKSPACE}/blobs"
+          mkdir -p "$BLOBS"
+
+          # Decode encrypted Root CA key from environment secret and decrypt
+          printf '%s' "$ROOT_CA_KEY_B64" | base64 -d > "${TMPDIR}/old-root.key.enc"
+          OLD_COMBINED=$(derive_combined_passphrase "$PASSWORD_FELIXBOEHM" "$PASSWORD_NANTERO1")
+          pki_decrypt "${TMPDIR}/old-root.key.enc" "${TMPDIR}/old-root.key" "$OLD_COMBINED"
+
+          # Archive old Root cert
+          mkdir -p pki/root/archive
+          cp pki/root/ca-cert.pem "pki/root/archive/ca-cert-$(date +%Y%m%d).pem"
+
+          # Generate new Root CA
+          generate_rsa_key 4096 "${TMPDIR}/new-root.key"
+          create_root_ca "${TMPDIR}/new-root.key" pki/root/ca-cert.pem 3650
+
+          # Re-sign all Issuing CA certs with new Root
+          for issuer_dir in pki/issuers/*/; do
+            partner="$(basename "$issuer_dir")"
+            issuer_cert="${issuer_dir}issuing-cert.pem"
+            if [ -f "$issuer_cert" ]; then
+              # Extract public key and subject from existing Issuing CA cert
+              openssl x509 -in "$issuer_cert" -noout -pubkey > "${TMPDIR}/issuer-pub.pem"
+              CN="$(openssl x509 -in "$issuer_cert" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
+
+              # Re-sign using x509 -force_pubkey
+              openssl x509 -req \
+                -in <(openssl req -new -key "${TMPDIR}/old-root.key" -subj "/CN=${CN}/O=Performance Dudes") \
+                -force_pubkey "${TMPDIR}/issuer-pub.pem" \
+                -CA pki/root/ca-cert.pem -CAkey "${TMPDIR}/new-root.key" \
+                -CAcreateserial -out "$issuer_cert" -days 1825 \
+                -extfile <(printf '%s\n' \
+                  "basicConstraints=critical,CA:TRUE,pathlen:0" \
+                  "keyUsage=critical,keyCertSign,cRLSign" \
+                  "subjectKeyIdentifier=hash" \
+                  "authorityKeyIdentifier=keyid:always")
+              echo "Re-signed: $issuer_cert"
+            fi
+          done
+
+          # Encrypt new Root key with new combined passphrase
+          NEW_COMBINED=$(derive_combined_passphrase "$NEW_PASSWORD_FELIXBOEHM" "$NEW_PASSWORD_NANTERO1")
+          pki_encrypt "${TMPDIR}/new-root.key" "${BLOBS}/root-ca-key.enc" "$NEW_COMBINED"
+
+          # Wipe plaintext keys
+          secure_wipe "${TMPDIR}/old-root.key"
+          secure_wipe "${TMPDIR}/new-root.key"
+          rm -f "${TMPDIR}/old-root.key.enc"
+          rm -rf "${TMPDIR}"
+
+      - name: Verify chain
+        run: |
+          for issuer_dir in pki/issuers/*/; do
+            cert="${issuer_dir}issuing-cert.pem"
+            if [ -f "$cert" ]; then
+              openssl verify -CAfile pki/root/ca-cert.pem "$cert"
+            fi
+          done
+
+      - name: Upload encrypted keys as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-keys
+          path: blobs/*.enc
+          retention-days: 7
+
+      - name: Remove blobs before commit
+        run: rm -rf blobs
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="pki/rotate-root-$(date +%Y%m%d-%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add pki/root/ca-cert.pem pki/root/ca-cert.srl pki/root/archive/ pki/issuers/
+          git commit -m "feat: rotate Root CA key
+
+          Old Root CA cert archived. All Issuing CA certs re-signed.
+          End-entity certs unchanged (they chain to Issuing CAs)."
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "feat: rotate Root CA key" \
+            --body "## Summary
+
+          Root CA rotated. Old cert archived. All Issuing CA certs re-signed with new Root.
+          End-entity certs are unchanged (they chain to Issuing CAs, not the Root directly).
+
+          ## Public files
+          - \`pki/root/ca-cert.pem\` — new Root CA certificate
+          - \`pki/root/archive/\` — old Root CA cert archived
+          - \`pki/issuers/*/issuing-cert.pem\` — re-signed Issuing CA certs
+
+          ## Encrypted Root CA key
+          The new Root CA key (encrypted with new combined passphrase) is uploaded as
+          workflow artifact \`encrypted-keys\` on this run.
+
+          **Next step after merging:** download the artifact and run
+          \`./scripts/sync-keys-from-workflow.sh ${{ github.run_id }}\` locally to
+          update the \`ROOT_CA_KEY_ENC_B64\` secret in the \`pki-root\` GitHub Environment.
+          Also update \`PKI_PASSWORD_FELIXBOEHM\` and \`PKI_PASSWORD_NANTERO1\` in \`pki-root\`
+          to the new passwords provided at workflow dispatch.
+
+          All partners must review and verify the chain before merging."

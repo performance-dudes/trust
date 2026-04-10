@@ -1,0 +1,62 @@
+name: "PKI: Export Root CA (Escape Hatch)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: Export Root CA
+    runs-on: ubuntu-latest
+    environment: pki-root
+    env:
+      PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}
+      PASSWORD_NANTERO1: ${{ secrets.PKI_PASSWORD_NANTERO1 }}
+      ROOT_CA_KEY_B64: ${{ secrets.ROOT_CA_KEY_ENC_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Export Root CA key
+        run: |
+          source tools/pki.sh
+          TMPDIR="$(mktemp -d)"
+
+          # Decode encrypted Root CA key from environment secret and decrypt
+          printf '%s' "$ROOT_CA_KEY_B64" | base64 -d > "${TMPDIR}/root-ca.key.enc"
+          COMBINED=$(derive_combined_passphrase "$PASSWORD_FELIXBOEHM" "$PASSWORD_NANTERO1")
+          pki_decrypt "${TMPDIR}/root-ca.key.enc" "${TMPDIR}/root-ca.key" "$COMBINED"
+
+          # Generate one-time passphrase
+          OTP="$(openssl rand -base64 32)"
+
+          # Re-encrypt with one-time passphrase
+          pki_encrypt "${TMPDIR}/root-ca.key" "${TMPDIR}/root-ca-export.enc" "$OTP"
+
+          # Wipe original
+          secure_wipe "${TMPDIR}/root-ca.key"
+          rm -f "${TMPDIR}/root-ca.key.enc"
+
+          # Output OTP to job summary (visible only to repo admins)
+          echo "## Root CA Export" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "One-time passphrase (use immediately, then discard):" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "$OTP" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Decrypt with: \`age -d -o root-ca.key root-ca-export.enc\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # Move export file for artifact upload
+          mv "${TMPDIR}/root-ca-export.enc" /tmp/root-ca-export.enc
+          rm -rf "${TMPDIR}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: root-ca-export
+          path: /tmp/root-ca-export.enc
+          retention-days: 0
+          overwrite: true

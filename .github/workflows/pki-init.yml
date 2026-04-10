@@ -1,0 +1,209 @@
+name: "PKI: Initialize Certificate Authority"
+
+# One-time workflow to create the full CA hierarchy from scratch.
+# Uses a combined passphrase for bootstrapping (both passwords on one runner)
+# but outputs a NESTED-encrypted Root CA blob for all future operations.
+#
+# After init, pki-root is never used again. All subsequent 2-of-2 operations
+# use multi-phase workflows with per-partner environments.
+#
+# Gate jobs ensure both partners approve before the init job runs.
+# Policy verification ensures environment protection rules are intact.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+
+  # ── Gate: felixboehm must approve ─────────────────────────────────────────
+  gate-a:
+    name: "Gate: felixboehm approval"
+    runs-on: ubuntu-latest
+    environment: pki-felixboehm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PKI_GUARD_APP_ID }}
+          private-key: ${{ secrets.PKI_GUARD_PRIVATE_KEY }}
+      - name: Verify pki-felixboehm policy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: source tools/pki.sh && verify_environment_policy pki-felixboehm
+
+  # ── Gate: nantero1 must approve ─────────────────────────────────────────
+  gate-b:
+    name: "Gate: nantero1 approval"
+    runs-on: ubuntu-latest
+    needs: gate-a
+    environment: pki-nantero1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PKI_GUARD_APP_ID }}
+          private-key: ${{ secrets.PKI_GUARD_PRIVATE_KEY }}
+      - name: Verify pki-nantero1 policy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: source tools/pki.sh && verify_environment_policy pki-nantero1
+
+  # ── Init: Generate CA hierarchy ──────────────────────────────────────────
+  init:
+    name: Initialize PKI
+    runs-on: ubuntu-latest
+    needs: [gate-a, gate-b]
+    environment: pki-root
+    env:
+      PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}
+      PASSWORD_NANTERO1: ${{ secrets.PKI_PASSWORD_NANTERO1 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if PKI already exists
+        run: |
+          if [ -f pki/root/ca-cert.pem ]; then
+            echo "::error::PKI already initialized. Use pki-rotate to change keys."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PKI_GUARD_APP_ID }}
+          private-key: ${{ secrets.PKI_GUARD_PRIVATE_KEY }}
+
+      - name: Verify pki-root policy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: source tools/pki.sh && verify_environment_policy pki-root
+
+      - name: Generate PKI hierarchy
+        run: |
+          source tools/pki.sh
+          source .github/pki-partners.sh
+
+          mkdir -p pki/root pki/certs pki/crl pki/csrs
+
+          BLOBS="${GITHUB_WORKSPACE}/blobs"
+          mkdir -p "$BLOBS"
+          TMPDIR="$(mktemp -d)"
+
+          # ── Root CA (RSA-4096, 10 years) ──
+          generate_rsa_key 4096 "${TMPDIR}/root-ca.key"
+          create_root_ca "${TMPDIR}/root-ca.key" pki/root/ca-cert.pem 3650
+          echo "01" > pki/root/ca-cert.srl
+
+          # ── Issuing CAs (RSA-3072, 5 years each) ──
+          for partner_slug in "${PARTNERS[@]}"; do
+            partner_display="$partner_slug"  # GitHub username as cert subject
+            mkdir -p "pki/issuers/${partner_slug}"
+            generate_rsa_key 3072 "${TMPDIR}/${partner_slug}-issuing.key"
+            create_issuing_ca "${TMPDIR}/root-ca.key" pki/root/ca-cert.pem \
+              "${TMPDIR}/${partner_slug}-issuing.key" "pki/issuers/${partner_slug}/issuing-cert.pem" \
+              "$partner_display" 1825
+            echo "01" > "pki/issuers/${partner_slug}/issuing-cert.srl"
+          done
+
+          # ── Empty CRLs ──
+          create_empty_crl "${TMPDIR}/root-ca.key" pki/root/ca-cert.pem pki/crl/root-crl.pem 3650
+          for partner_slug in "${PARTNERS[@]}"; do
+            create_empty_crl "${TMPDIR}/${partner_slug}-issuing.key" \
+              "pki/issuers/${partner_slug}/issuing-cert.pem" \
+              "pki/crl/${partner_slug}-crl.pem" 1825
+          done
+
+          # ── Encrypt keys ──
+          # Root CA: nested encryption (inner=B, outer=A)
+          nested_encrypt_both "${TMPDIR}/root-ca.key" "${BLOBS}/root-ca-key.nested.enc" \
+            "$PASSWORD_NANTERO1" "$PASSWORD_FELIXBOEHM"
+
+          # Issuing CAs: single-layer encryption (per partner)
+          # Convention: PARTNERS[0] uses PASSWORD_FELIXBOEHM, PARTNERS[1] uses PASSWORD_NANTERO1
+          passwords=("$PASSWORD_FELIXBOEHM" "$PASSWORD_NANTERO1")
+          for i in "${!PARTNERS[@]}"; do
+            partner_slug="${PARTNERS[$i]}"
+            pki_encrypt "${TMPDIR}/${partner_slug}-issuing.key" \
+              "${BLOBS}/${partner_slug}-issuing-key.enc" "${passwords[$i]}"
+          done
+
+          # ── Wipe plaintext keys ──
+          for f in "${TMPDIR}"/*.key; do
+            secure_wipe "$f"
+          done
+          rm -rf "${TMPDIR}"
+
+      - name: Verify certificate chain
+        run: |
+          source .github/pki-partners.sh
+          echo "=== Root CA ==="
+          openssl x509 -in pki/root/ca-cert.pem -noout -subject -issuer -dates -ext basicConstraints
+          for partner_slug in "${PARTNERS[@]}"; do
+            echo ""
+            echo "=== Issuing CA: ${partner_slug} ==="
+            openssl x509 -in "pki/issuers/${partner_slug}/issuing-cert.pem" -noout -subject -issuer -dates
+            openssl verify -CAfile pki/root/ca-cert.pem "pki/issuers/${partner_slug}/issuing-cert.pem"
+          done
+
+      - name: Upload encrypted keys
+        uses: actions/upload-artifact@v4
+        with:
+          name: encrypted-keys
+          path: blobs/*
+          retention-days: 7
+
+      - name: Remove blobs before commit
+        run: rm -rf blobs
+
+      - name: Create PR with public certs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          source .github/pki-partners.sh
+          BRANCH="pki/init-$(date +%Y%m%d-%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add pki/
+          git commit -m "feat: initialize PKI CA hierarchy
+
+          Root CA (RSA-4096, 10y) with per-partner Issuing CAs (RSA-3072, 5y).
+          Public certificates and CRLs only. Encrypted private keys uploaded
+          as workflow artifact for sync into secrets and trust-keys repo."
+
+          # Build partner list for PR body
+          partner_list=""
+          for partner_slug in "${PARTNERS[@]}"; do
+            partner_display="$partner_slug"  # GitHub username as cert subject
+            partner_list="${partner_list}
+          - Issuing CA for ${partner_display} (${partner_slug}, RSA-3072, 5-year)"
+          done
+
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "feat: initialize PKI CA hierarchy" \
+            --body "## Summary
+          - Root CA (RSA-4096, 10-year validity)${partner_list}
+          - Empty CRLs initialized
+          - Certificate chain verified
+
+          ## Public certificates
+          Committed to this PR (no private key material).
+
+          ## Encrypted private keys
+          Uploaded as workflow artifact \`encrypted-keys\` (7-day retention).
+
+          Root CA key: nested encryption (outer=felixboehm, inner=nantero1).
+          Issuing CA keys: single-layer encryption (per partner).
+
+          **After merging this PR, run locally:**
+          \`\`\`bash
+          ./scripts/sync-keys-from-workflow.sh ${{ github.run_id }}
+          \`\`\`
+          This populates GitHub Environment Secrets and the trust-keys repo."

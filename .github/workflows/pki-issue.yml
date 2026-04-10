@@ -1,0 +1,97 @@
+name: "PKI: Issue End-Entity Certificate"
+
+on:
+  workflow_dispatch:
+    inputs:
+      issuer:
+        description: "Issuing CA GitHub username (as defined in .github/pki-partners.sh)"
+        required: true
+        type: string
+      csr_path:
+        description: "Path to CSR file relative to repo root (e.g. pki/csrs/member-name.csr)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  issue:
+    name: Issue certificate
+    runs-on: ubuntu-latest
+    environment: pki-${{ inputs.issuer }}
+    env:
+      PASSWORD: ${{ secrets.PKI_PASSWORD }}
+      ISSUING_KEY_B64: ${{ secrets.ISSUING_KEY_ENC_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify CSR exists
+        run: |
+          if [ ! -f "${{ inputs.csr_path }}" ]; then
+            echo "::error::CSR not found: ${{ inputs.csr_path }}"
+            exit 1
+          fi
+
+      - name: Issue certificate
+        run: |
+          source tools/pki.sh
+          ISSUER="${{ inputs.issuer }}"
+          CSR="${{ inputs.csr_path }}"
+
+          TMPDIR="$(mktemp -d)"
+
+          # Decode encrypted Issuing CA key from environment secret
+          printf '%s' "$ISSUING_KEY_B64" | base64 -d > "${TMPDIR}/issuing.key.enc"
+
+          # Decrypt
+          pki_decrypt "${TMPDIR}/issuing.key.enc" "${TMPDIR}/issuing.key" "$PASSWORD"
+
+          # Extract CN from CSR for output filename
+          CN="$(openssl req -in "$CSR" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
+          SLUG="$(echo "$CN" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g')"
+
+          # Sign CSR
+          mkdir -p pki/certs
+          openssl x509 -req -in "$CSR" \
+            -CA "pki/issuers/${ISSUER}/issuing-cert.pem" \
+            -CAkey "${TMPDIR}/issuing.key" \
+            -CAcreateserial -out "pki/certs/${SLUG}.pem" \
+            -days 730 \
+            -extfile <(printf '%s\n' \
+              "basicConstraints=critical,CA:FALSE" \
+              "keyUsage=critical,digitalSignature,nonRepudiation" \
+              "extendedKeyUsage=emailProtection,1.3.6.1.4.1.311.10.3.12" \
+              "subjectKeyIdentifier=hash" \
+              "authorityKeyIdentifier=keyid:always")
+
+          # Wipe
+          secure_wipe "${TMPDIR}/issuing.key"
+          rm -f "${TMPDIR}/issuing.key.enc"
+          rm -rf "${TMPDIR}"
+
+          # Verify
+          cat "pki/issuers/${ISSUER}/issuing-cert.pem" pki/root/ca-cert.pem > /tmp/chain.pem
+          openssl verify -CAfile /tmp/chain.pem "pki/certs/${SLUG}.pem"
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CSR="${{ inputs.csr_path }}"
+          CN="$(openssl req -in "$CSR" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
+          SLUG="$(echo "$CN" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g')"
+          BRANCH="pki/issue-${SLUG}-$(date +%Y%m%d-%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add pki/certs/
+          git commit -m "feat: issue certificate for ${CN}"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "feat: issue certificate for ${CN}" \
+            --body "Issued by: ${{ inputs.issuer }}
+          CSR: \`${CSR}\`
+          Subject: ${CN}
+          Validity: 2 years"
