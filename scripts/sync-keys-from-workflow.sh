@@ -152,33 +152,42 @@ for blob in "${BLOBS[@]}"; do
 done
 echo ""
 
-# Commit and open PR in trust-keys
+# Commit locally in trust-keys (audit trail). Pushing is up to the user.
+# trust-keys is optional backup — the workflows themselves read from
+# GitHub Environment Secrets, which are already set above.
 cd "$TRUST_KEYS_PATH"
 BRANCH="sync/run-${RUN_ID}-$(date +%Y%m%d-%H%M%S)"
 git checkout -b "$BRANCH"
 git add pki/
 
 if git diff --staged --quiet; then
-  echo "No changes to commit in trust-keys (keys are already up to date)."
+  echo ""
+  echo "No changes to commit in trust-keys (keys are already up to date locally)."
   cd - >/dev/null
   git checkout - 2>/dev/null || true
+  LOCAL_SYNC_STATUS="unchanged"
 else
   git commit -m "sync: encrypted keys from ${TRUST_REPO} run ${RUN_ID}
 
 Auto-synced via scripts/sync-keys-from-workflow.sh from workflow run
 ${RUN_ID}. These encrypted blobs are also stored as GitHub Environment
 Secrets in ${TRUST_REPO} for runtime use by the PKI workflows."
-
-  git push -u origin "$BRANCH"
-  gh pr create \
-    --title "sync: encrypted keys from run ${RUN_ID}" \
-    --body "Automatic sync of encrypted PKI keys from a workflow run in ${TRUST_REPO}.
-
-Review and merge to keep the audit trail up to date. The keys are already live as GitHub Environment Secrets — this repo is the versioned backup."
   cd - >/dev/null
+  LOCAL_SYNC_STATUS="committed"
 fi
 
 echo ""
 echo "=== Sync complete ==="
 echo ""
-echo "Next: review and merge the PR in ${TRUST_KEYS_REPO}."
+echo "Environment Secrets in ${TRUST_REPO}: updated (workflows use these at runtime)."
+if [ "${LOCAL_SYNC_STATUS}" = "committed" ]; then
+  echo "trust-keys local commit: created on branch '${BRANCH}' (not pushed)."
+  echo ""
+  echo "trust-keys is an OPTIONAL audit trail / disaster-recovery backup."
+  echo "If you want to keep a remote backup, push and open a PR yourself:"
+  echo "  cd ${TRUST_KEYS_PATH}"
+  echo "  git push -u origin ${BRANCH}"
+  echo "  gh pr create --title 'sync: encrypted keys from run ${RUN_ID}'"
+else
+  echo "trust-keys local: no changes (keys already match)."
+fi
