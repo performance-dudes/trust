@@ -42,22 +42,16 @@ The list of active partners lives in [`.github/pki-partners.sh`](.github/pki-par
 
 This is the cooperative operating model encoded as X.509.
 
-## Full technical concept
-
-- [orga/concepts/pki-certificate-authority.md](https://github.com/performance-dudes/orga/blob/main/concepts/pki-certificate-authority.md) — hierarchy, encryption scheme, threat model (private)
-- [orga/decisions/011-pki-certificate-authority.md](https://github.com/performance-dudes/orga/blob/main/decisions/011-pki-certificate-authority.md) — decision record (private)
-
 ## What this repo is (technical)
 
 A self-managed PKI (Public Key Infrastructure) that lets the Performance Dudes cooperative issue X.509 certificates and cryptographically sign documents (PDFs, commits, etc.) without depending on a commercial certificate authority. Anyone can verify signatures against the public certificates in this repo.
 
-## The 3-repo architecture
+## The 2-repo architecture
 
 | Repo | Visibility | Contents |
 |---|---|---|
 | `performance-dudes/trust` (this repo) | public | Workflows, public certificates, tooling, usage docs |
 | `performance-dudes/trust-keys` | private | Encrypted CA private keys (audit trail + disaster recovery) |
-| `performance-dudes/orga` | private | Strategy, decisions, full technical concept |
 
 Private keys never enter this public repo. They live:
 - **At runtime** as Base64-encoded values in GitHub Environment Secrets
@@ -105,7 +99,7 @@ pki/
 5. **Public certs, everywhere verifiable.** The Root CA cert is published in this repo. Anyone can fetch it and verify a signature without trusting a third party.
 6. **Defense in depth.** CODEOWNERS prevents unilateral workflow modification. Environment approval gates prevent unilateral operations. Strong passphrases provide the last cryptographic backstop.
 
-See the [full concept in orga](https://github.com/performance-dudes/orga/blob/main/concepts/pki-certificate-authority.md) for hierarchy details, threat model, encryption scheme, and limitations (including the analysis of CGGMP24 threshold signing and nested age encryption).
+See [docs/cooperative.md](docs/cooperative.md) for the longer read on partner onboarding, signing/verification flows, and the transparency-as-a-feature stance.
 
 ## Customization
 
