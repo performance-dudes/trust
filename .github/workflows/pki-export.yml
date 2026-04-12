@@ -7,9 +7,47 @@ permissions:
   contents: read
 
 jobs:
+
+  # ── Gate: felixboehm must approve ─────────────────────────────────────────
+  gate-felixboehm:
+    name: "Gate: felixboehm approval"
+    runs-on: ubuntu-latest
+    environment: pki-felixboehm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PKI_GUARD_APP_ID }}
+          private-key: ${{ secrets.PKI_GUARD_PRIVATE_KEY }}
+      - name: Verify pki-felixboehm policy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: source tools/pki.sh && verify_environment_policy pki-felixboehm
+
+  # ── Gate: nantero1 must approve ─────────────────────────────────────────
+  gate-nantero1:
+    name: "Gate: nantero1 approval"
+    runs-on: ubuntu-latest
+    needs: gate-felixboehm
+    environment: pki-nantero1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PKI_GUARD_APP_ID }}
+          private-key: ${{ secrets.PKI_GUARD_PRIVATE_KEY }}
+      - name: Verify pki-nantero1 policy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: source tools/pki.sh && verify_environment_policy pki-nantero1
+
+  # ── Export: Decrypt Root CA and re-encrypt with one-time passphrase ───────
   export:
     name: Export Root CA
     runs-on: ubuntu-latest
+    needs: [gate-felixboehm, gate-nantero1]
     environment: pki-root
     env:
       PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}
@@ -17,6 +55,17 @@ jobs:
       ROOT_CA_KEY_B64: ${{ secrets.ROOT_CA_KEY_ENC_B64 }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PKI_GUARD_APP_ID }}
+          private-key: ${{ secrets.PKI_GUARD_PRIVATE_KEY }}
+
+      - name: Verify pki-root policy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: source tools/pki.sh && verify_environment_policy pki-root
 
       - name: Export Root CA key
         run: |
