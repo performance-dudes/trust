@@ -1,21 +1,57 @@
 # Trust
 
-Self-managed PKI for document signing — generic, reusable trust infrastructure.
+Self-managed PKI for Performance Dudes and its partners — fast, transparent, cooperatively operated.
 
-**Full technical concept:** [orga/concepts/pki-certificate-authority.md](https://github.com/performance-dudes/orga/blob/main/concepts/pki-certificate-authority.md) (private)
-**Decision record:** [orga/decisions/011-pki-certificate-authority.md](https://github.com/performance-dudes/orga/blob/main/decisions/011-pki-certificate-authority.md) (private)
+## Why this exists
 
-## What this repo is
+**Performance Dudes is a cooperative.** We are independent partners who run our own businesses and come together on engagements. When we sign an offer or a contract, it needs to be:
 
-A self-managed PKI (Public Key Infrastructure) that lets a team issue X.509 certificates and cryptographically sign documents (PDFs, commits, etc.) without depending on a commercial certificate authority. Anyone can verify signatures against the public certificates in this repo.
+- **Fast** — signed in minutes, from a laptop, not days of email-back-and-forth
+- **Professional** — cryptographically verifiable, not "here's a PDF attachment and you'll just have to trust us"
+- **Transparent** — the customer can inspect who signed and how the trust is rooted, without taking any third party's word for it
 
-## The 3-repo architecture
+This repository is the trust infrastructure that makes that possible. It is **public by design** — our trust chain is open for anyone to audit, clone, and verify.
+
+## How it plays out
+
+Every partner in the cooperative operates their own **Issuing CA** under a shared **Root CA**. When a partner signs a document, the certificate chain inside the signature proves three things:
+
+1. **Who** signed — a specific person, identified by their end-entity certificate
+2. **Which partner** they belong to — the Issuing CA that signed their personal cert
+3. **That the partner belongs to the cooperative** — the Root CA that signed the Issuing CA
+
+A customer verifies the Performance Dudes Root CA certificate **once**. From then on, every signed document from any partner in the cooperative verifies instantly. Second partner joins the engagement? Their signature appends to the same document. The customer sees both partners vouched for the work.
+
+No commercial CA. No external authority in the loop. No monthly subscription fee. No vendor lock-in. The cooperative owns its trust root.
+
+## The partners
+
+The list of active partners lives in [`.github/pki-partners.sh`](.github/pki-partners.sh). Each entry is a GitHub username and corresponds to one Issuing CA whose public certificate lives under [`pki/issuers/<username>/`](pki/). Adding a new partner requires 2-of-2 approval from both founders via the `pki-onboard` workflow, and appears here as a pull request — the whole cooperative is transparent.
+
+**Longer read:** [docs/cooperative.md](docs/cooperative.md) — how partners join, leave, sign, and how customers verify.
+
+**What each partner controls:**
+- Their own Issuing CA private key (encrypted, never exported)
+- Issuing end-entity certificates to people signing on their behalf
+- Revoking their own team's certificates
+
+**What requires 2-of-2 (both founders):**
+- Onboarding a new partner
+- Rotating the Root CA
+- Revoking another partner's Issuing CA
+
+This is the cooperative operating model encoded as X.509.
+
+## What this repo is (technical)
+
+A self-managed PKI (Public Key Infrastructure) that lets the Performance Dudes cooperative issue X.509 certificates and cryptographically sign documents (PDFs, commits, etc.) without depending on a commercial certificate authority. Anyone can verify signatures against the public certificates in this repo.
+
+## The 2-repo architecture
 
 | Repo | Visibility | Contents |
 |---|---|---|
 | `performance-dudes/trust` (this repo) | public | Workflows, public certificates, tooling, usage docs |
 | `performance-dudes/trust-keys` | private | Encrypted CA private keys (audit trail + disaster recovery) |
-| `performance-dudes/orga` | private | Strategy, decisions, full technical concept |
 
 Private keys never enter this public repo. They live:
 - **At runtime** as Base64-encoded values in GitHub Environment Secrets
@@ -63,7 +99,7 @@ pki/
 5. **Public certs, everywhere verifiable.** The Root CA cert is published in this repo. Anyone can fetch it and verify a signature without trusting a third party.
 6. **Defense in depth.** CODEOWNERS prevents unilateral workflow modification. Environment approval gates prevent unilateral operations. Strong passphrases provide the last cryptographic backstop.
 
-See the [full concept in orga](https://github.com/performance-dudes/orga/blob/main/concepts/pki-certificate-authority.md) for hierarchy details, threat model, encryption scheme, and limitations (including the analysis of CGGMP24 threshold signing and nested age encryption).
+See [docs/cooperative.md](docs/cooperative.md) for the longer read on partner onboarding, signing/verification flows, and the transparency-as-a-feature stance.
 
 ## Customization
 
