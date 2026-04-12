@@ -46,16 +46,7 @@ This is the cooperative operating model encoded as X.509.
 
 A self-managed PKI (Public Key Infrastructure) that lets the Performance Dudes cooperative issue X.509 certificates and cryptographically sign documents (PDFs, commits, etc.) without depending on a commercial certificate authority. Anyone can verify signatures against the public certificates in this repo.
 
-## The 2-repo architecture
-
-| Repo | Visibility | Contents |
-|---|---|---|
-| `performance-dudes/trust` (this repo) | public | Workflows, public certificates, tooling, usage docs |
-| `performance-dudes/trust-keys` | private | Encrypted CA private keys (audit trail + disaster recovery) |
-
-Private keys never enter this public repo. They live:
-- **At runtime** as Base64-encoded values in GitHub Environment Secrets
-- **As audit/backup** as versioned files in the `trust-keys` private repo
+Private keys never enter this public repo.
 
 ## Directory layout
 
@@ -64,10 +55,10 @@ Private keys never enter this public repo. They live:
   pki-partners.sh    Partner GitHub usernames + display names
   pki-config.sh      Expected environment protection rules
   workflows/         Seven PKI management workflows (init, issue, renew, revoke, rotate, onboard, export)
-tools/pki.sh         Shared helper functions (rage install, OpenSSL wrappers)
+tools/pki.sh         Shared helper functions (OpenSSL wrappers)
 scripts/
-  setup-environments.sh       Creates GitHub Environments, sets password secrets
-  sync-keys-from-workflow.sh  Syncs encrypted keys from workflow artifact to secrets + trust-keys
+  setup-environments.sh       One-time per-founder setup
+  sync-keys-from-workflow.sh  Post-init sync helper
 pki/
   root/ca-cert.pem                 Root CA public certificate
   issuers/<github-username>/       Per-partner Issuing CA public certs
@@ -93,7 +84,7 @@ pki/
 ## How it works (brief)
 
 1. **Two-tier CA hierarchy.** A 2-of-2 Root CA signs per-partner Issuing CAs, which sign end-entity certificates. Each partner operates autonomously within their own Issuing CA branch.
-2. **Encrypted at rest.** All CA private keys are encrypted with age using passphrases stored as GitHub Environment Secrets. The Root CA uses a 2-of-2 combined passphrase; Issuing CAs use the respective partner's password.
+2. **Encrypted at rest.** All CA private keys are encrypted with passphrases that only the respective partners know. The Root CA requires both founders' passphrases combined (nested encryption); each Issuing CA requires only its respective partner's passphrase.
 3. **Approval gates.** GitHub Environments with required reviewers enforce 2-of-2 at the operational level. All partners must approve before `pki-root` secrets are exposed to a workflow runner.
 4. **Local signing.** End-entity private keys are generated locally by each member. Only a CSR (public material) is submitted to this repo for signing. Members never upload a private key.
 5. **Public certs, everywhere verifiable.** The Root CA cert is published in this repo. Anyone can fetch it and verify a signature without trusting a third party.
@@ -138,26 +129,19 @@ gh workflow run pki-init.yml --repo performance-dudes/trust
 
 The workflow generates the Root CA and per-partner Issuing CAs, encrypts the private keys, uploads them as the `encrypted-keys` artifact, commits public certificates via a PR.
 
-### 3. Sync encrypted keys to secrets and trust-keys
+### 3. Post-init sync
 
-After `pki-init` completes successfully, sync the encrypted keys:
+After `pki-init` completes, a founder runs the sync script to finalize the setup:
 
 ```bash
-# Clone trust-keys next to this repo (first time only)
-git clone git@github.com:performance-dudes/trust-keys.git ../trust-keys
-
-# Sync from a workflow run ID
 ./scripts/sync-keys-from-workflow.sh <run-id>
 ```
 
-The script downloads the artifact, sets each encrypted key as a GitHub Environment Secret, and commits the blobs to `trust-keys` (opens a PR).
+### 4. Review and merge the public certs PR
 
-### 4. Review and merge both PRs
+The init workflow opens a PR with the Root CA and per-partner Issuing CA public certificates. CODEOWNERS requires both founders to approve.
 
-- The public certs PR in this repo
-- The encrypted keys backup PR in `trust-keys`
-
-After merging, all subsequent workflows (`pki-issue`, `pki-renew`, etc.) can read the encrypted keys from the Environment Secrets and operate.
+After merging, subsequent workflows (`pki-issue`, `pki-renew`, etc.) are operational.
 
 ### 5. (Production only) Harden the setup
 
