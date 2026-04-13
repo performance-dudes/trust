@@ -84,19 +84,29 @@ create_root_ca() {
     -addext "subjectKeyIdentifier=hash"
 }
 
-create_issuing_ca() {
-  local issuer_key="$1" issuer_cert="$2" ca_key="$3" ca_cert="$4" partner_name="$5" days="$6"
-  local csr
-  csr="$(mktemp)"
-  openssl req -new -key "$ca_key" -out "$csr" \
+build_issuing_ca_csr() {
+  local ca_key="$1" csr_out="$2" partner_name="$3"
+  openssl req -new -key "$ca_key" -out "$csr_out" \
     -subj "/CN=Performance Dudes Issuing CA - ${partner_name}/O=Performance Dudes"
-  openssl x509 -req -in "$csr" -CA "$issuer_cert" -CAkey "$issuer_key" \
-    -CAcreateserial -out "$ca_cert" -days "$days" \
+}
+
+sign_issuing_ca_csr() {
+  local csr="$1" root_key="$2" root_cert="$3" cert_out="$4" days="$5"
+  openssl x509 -req -in "$csr" -CA "$root_cert" -CAkey "$root_key" \
+    -CAcreateserial -out "$cert_out" -days "$days" \
     -extfile <(printf '%s\n' \
       "basicConstraints=critical,CA:TRUE,pathlen:0" \
       "keyUsage=critical,keyCertSign,cRLSign" \
       "subjectKeyIdentifier=hash" \
       "authorityKeyIdentifier=keyid:always")
+}
+
+create_issuing_ca() {
+  local issuer_key="$1" issuer_cert="$2" ca_key="$3" ca_cert="$4" partner_name="$5" days="$6"
+  local csr
+  csr="$(mktemp)"
+  build_issuing_ca_csr "$ca_key" "$csr" "$partner_name"
+  sign_issuing_ca_csr "$csr" "$issuer_key" "$issuer_cert" "$ca_cert" "$days"
   rm -f "$csr"
 }
 
