@@ -39,7 +39,7 @@ jobs:
 
       - name: Revoke
         run: |
-          source tools/pki.sh
+          source .github/pki.sh
           TARGET="${{ inputs.target_name }}"
           ISSUER="${{ inputs.issuer }}"
           TMPDIR="$(mktemp -d)"
@@ -109,7 +109,7 @@ jobs:
       - name: Verify pki-felixboehm policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-felixboehm
+        run: source .github/pki.sh && verify_environment_policy pki-felixboehm
 
   gate-nantero1:
     name: "Gate: nantero1 approval"
@@ -127,7 +127,7 @@ jobs:
       - name: Verify pki-nantero1 policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-nantero1
+        run: source .github/pki.sh && verify_environment_policy pki-nantero1
 
   # ── 2-of-2: Revoke issuing CA (both partners must approve) ───────────────
   revoke-issuing-ca:
@@ -152,11 +152,11 @@ jobs:
       - name: Verify pki-root policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-root
+        run: source .github/pki.sh && verify_environment_policy pki-root
 
       - name: Revoke
         run: |
-          source tools/pki.sh
+          source .github/pki.sh
           TARGET="${{ inputs.target_name }}"
           TMPDIR="$(mktemp -d)"
 

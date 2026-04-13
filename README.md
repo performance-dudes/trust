@@ -52,10 +52,11 @@ Private keys never enter this public repo.
 
 ```
 .github/
+  pki.sh             Shared helper functions (OpenSSL wrappers)
   pki-partners.sh    Partner GitHub usernames + display names
   pki-config.sh      Expected environment protection rules
+  CODEOWNERS         Both founders required for changes in .github/ and scripts/
   workflows/         Seven PKI management workflows (init, issue, renew, revoke, rotate, onboard, export)
-tools/pki.sh         Shared helper functions (OpenSSL wrappers)
 scripts/
   setup-root-env.sh           One-time per-founder: Root CA ceremony passphrase
   setup-issuer-env.sh         One-time per-partner: Issuing CA passphrase
