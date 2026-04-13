@@ -57,7 +57,8 @@ Private keys never enter this public repo.
   workflows/         Seven PKI management workflows (init, issue, renew, revoke, rotate, onboard, export)
 tools/pki.sh         Shared helper functions (OpenSSL wrappers)
 scripts/
-  setup-environments.sh       One-time per-founder setup
+  setup-root-env.sh           One-time per-founder: Root CA ceremony passphrase
+  setup-issuer-env.sh         One-time per-partner: Issuing CA passphrase
   sync-keys-from-workflow.sh  Post-init sync helper
 pki/
   root/ca-cert.pem                 Root CA public certificate
@@ -108,34 +109,59 @@ To use this repo for your own team:
 
 Run from a local clone of this repo.
 
-### 1. Create environments and set password secrets
+### 1. Each founder sets their Root CA ceremony passphrase
 
-Each partner runs from their own machine, passing their GitHub username:
+Founders only. Run from your own machine:
 
 ```bash
-./scripts/setup-environments.sh felixboehm    # felixboehm runs this
-./scripts/setup-environments.sh nantero1      # nantero1 runs this
+./scripts/setup-root-env.sh felixboehm    # felixboehm runs this
+./scripts/setup-root-env.sh nantero1      # nantero1 runs this
 ```
 
-Each partner types their own PKI password. Secrets are write-only — **save the password in a password manager first.**
+Each founder types their own passphrase. This is used rarely (init, rotate, onboard, export).
 
-For testing, you can run the script once per partner from one account.
+### 2. Each partner sets their Issuing CA passphrase
 
-### 2. Initialize the PKI
+Every partner (founders + future partners). Run from your own machine:
+
+```bash
+./scripts/setup-issuer-env.sh felixboehm  # felixboehm runs this
+./scripts/setup-issuer-env.sh nantero1    # nantero1 runs this
+```
+
+Each partner types their own passphrase. Used regularly (issue, renew, revoke end-entity certs).
+
+Save each passphrase in your password manager — secrets are write-only.
+
+### 3. Initialize the Root CA
 
 ```bash
 gh workflow run pki-init.yml --repo performance-dudes/trust
 ```
 
-The workflow generates the Root CA and per-partner Issuing CAs, encrypts the private keys, uploads them as the `encrypted-keys` artifact, commits public certificates via a PR.
+Both founders approve the gates. The workflow creates **only the Root CA** and uploads it as an encrypted artifact.
 
-### 3. Post-init sync
-
-After `pki-init` completes, a founder runs the sync script to finalize the setup:
+### 4. Post-init sync
 
 ```bash
 ./scripts/sync-keys-from-workflow.sh <run-id>
 ```
+
+### 5. Onboard each partner (including founders themselves)
+
+Same flow for every partner — founders first, future partners later:
+
+```bash
+gh workflow run pki-onboard.yml -f partner=felixboehm
+# approve gates, merge PR, then sync
+./scripts/sync-keys-from-workflow.sh <run-id>
+
+gh workflow run pki-onboard.yml -f partner=nantero1
+# same
+./scripts/sync-keys-from-workflow.sh <run-id>
+```
+
+Each onboard run creates the partner's Issuing CA (encrypted with their password), signs it with the Root CA, and commits the public cert.
 
 ### 4. Review and merge the public certs PR
 
