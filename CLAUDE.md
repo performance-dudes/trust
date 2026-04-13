@@ -20,7 +20,7 @@ This is the public PKI repository for Performance Dudes. You are helping a partn
 
 ## What you must NEVER do
 
-- **Read or prompt for any PKI passphrase.** The user runs `scripts/setup-environments.sh` themselves and types into its `read -rs` prompt — the passphrase does not pass through your context. Never ask for it, never log it, never store it anywhere.
+- **Read or prompt for any PKI passphrase.** The user runs `scripts/setup-root-env.sh` or `scripts/setup-issuer-env.sh` themselves and types into their `read -rs` prompt — the passphrase does not pass through your context. Never ask for it, never log it, never store it anywhere.
 - **Commit encrypted or plaintext private keys** to this repo. Encrypted CA keys live as Env Secrets. Any `.key` or `.pem` private-key file in a commit is a bug.
 - **Approve workflow runs for the other founder/partner.** Their approval goes through their own `gh` auth, not yours.
 - **Change `.github/pki-config.sh` expected values** without understanding the ceremony implications. That file declares the policy that the workflows self-verify against. Mismatch = workflow fails.
@@ -36,10 +36,18 @@ This is the public PKI repository for Performance Dudes. You are helping a partn
 6. Cert PR opens — review and merge (CODEOWNERS)
 
 ### "I need to set up my environment secrets"
-1. User runs `scripts/setup-environments.sh <their-username>`
-2. User types their passphrase into the `read -rs` prompt themselves — you never see it
-3. Script sets `PKI_PASSWORD_<THEM>` in `pki-root` and `PKI_PASSWORD` in their personal environment
-4. Done — do not attempt to verify the value
+
+Two scripts, split by role:
+
+- **Founder**: runs BOTH scripts. Root ceremony passphrase (rare use, set via `setup-root-env.sh`) and Issuing CA passphrase (regular use, set via `setup-issuer-env.sh`). For the current onboard workflow these must be the SAME value per founder — stored in two env secrets.
+- **Non-founder partner**: runs ONLY `setup-issuer-env.sh` (no Root CA access).
+
+```bash
+./scripts/setup-root-env.sh <username>     # founder only
+./scripts/setup-issuer-env.sh <username>   # every partner
+```
+
+User types their passphrase into the `read -rs` prompt themselves — you never see it.
 
 ### "Initialize the PKI" (2-of-2)
 - Only after both founders have completed env setup and policy is production-hardened
@@ -59,7 +67,8 @@ This is the public PKI repository for Performance Dudes. You are helping a partn
   CODEOWNERS                 Who must review workflow/tooling changes
 tools/pki.sh                 Shared helper functions
 scripts/
-  setup-environments.sh      Run by each partner to set their password secret
+  setup-root-env.sh          Founder-only: Root CA ceremony passphrase
+  setup-issuer-env.sh        Every partner: Issuing CA passphrase
   sync-keys-from-workflow.sh Run after write-ops to set encrypted-key secrets
 pki/
   root/ca-cert.pem           Root CA public certificate

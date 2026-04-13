@@ -1,14 +1,29 @@
-name: "PKI: Onboard Partner"
+name: "PKI: Onboard Partner (create Issuing CA)"
+
+# 2-of-2 workflow to create an Issuing CA for a partner (founder or new).
+# Same flow used for the initial founders after pki-init and for any
+# future partner being added — no special case.
+#
+# IMPORTANT — Current limitation:
+# The onboard job runs in pki-root and encrypts the new Issuing CA key
+# with the partner's password from pki-root (PKI_PASSWORD_<PARTNER>).
+# For this to work, the partner's password in pki-root MUST EQUAL the
+# PKI_PASSWORD they set in their own pki-<partner> environment.
+#
+# In practice: each partner uses the SAME passphrase for both
+# `setup-root-env.sh` and `setup-issuer-env.sh`. That collapses defense
+# in depth for that partner (one passphrase leak = both root-ceremony
+# contribution and issuing-ca compromised) but is the only scheme that
+# works without a multi-job artifact handoff.
+#
+# Supporting truly-separated passphrases is tracked separately (would
+# require a multi-job workflow with an encrypted transport mechanism).
 
 on:
   workflow_dispatch:
     inputs:
-      partner_name:
-        description: "New partner's full name"
-        required: true
-        type: string
-      partner_slug:
-        description: "Short name for directories and environments (e.g. 'jane')"
+      partner:
+        description: "Partner's GitHub username (must be in .github/pki-partners.sh)"
         required: true
         type: string
 
@@ -18,7 +33,7 @@ permissions:
 
 jobs:
 
-  # ── Gate: felixboehm must approve ─────────────────────────────────────────
+  # ── Gate: felixboehm approves ─────────────────────────────────────────────
   gate-felixboehm:
     name: "Gate: felixboehm approval"
     runs-on: ubuntu-latest
@@ -35,7 +50,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: source tools/pki.sh && verify_environment_policy pki-felixboehm
 
-  # ── Gate: nantero1 must approve ─────────────────────────────────────────
+  # ── Gate: nantero1 approves ─────────────────────────────────────────────
   gate-nantero1:
     name: "Gate: nantero1 approval"
     runs-on: ubuntu-latest
@@ -53,16 +68,16 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: source tools/pki.sh && verify_environment_policy pki-nantero1
 
-  # ── Onboard: Generate Issuing CA for new partner ─────────────────────────
+  # ── Onboard: Generate Issuing CA for the partner ─────────────────────────
   onboard:
-    name: Onboard partner
+    name: Create Issuing CA
     runs-on: ubuntu-latest
     needs: [gate-felixboehm, gate-nantero1]
     environment: pki-root
     env:
       PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}
       PASSWORD_NANTERO1: ${{ secrets.PKI_PASSWORD_NANTERO1 }}
-      ROOT_CA_KEY_B64: ${{ secrets.ROOT_CA_KEY_ENC_B64 }}
+      ROOT_CA_KEY_NESTED_B64: ${{ secrets.ROOT_CA_KEY_NESTED_B64 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,48 +92,80 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: source tools/pki.sh && verify_environment_policy pki-root
 
-      - name: Create partner PKI
+      - name: Validate partner is known
+        run: |
+          source .github/pki-partners.sh
+          PARTNER="${{ inputs.partner }}"
+          found=false
+          for slug in "${PARTNERS[@]}"; do
+            [ "$slug" = "$PARTNER" ] && found=true
+          done
+          if [ "$found" != "true" ]; then
+            echo "::error::Partner '$PARTNER' is not in .github/pki-partners.sh"
+            exit 1
+          fi
+
+      - name: Check Issuing CA doesn't already exist
+        run: |
+          PARTNER="${{ inputs.partner }}"
+          if [ -f "pki/issuers/${PARTNER}/issuing-cert.pem" ]; then
+            echo "::error::Issuing CA for ${PARTNER} already exists. Use pki-revoke then pki-onboard to replace."
+            exit 1
+          fi
+
+      - name: Create partner Issuing CA
         run: |
           source tools/pki.sh
-          SLUG="${{ inputs.partner_slug }}"
-          NAME="${{ inputs.partner_name }}"
+          PARTNER="${{ inputs.partner }}"
 
           TMPDIR="$(mktemp -d)"
           BLOBS="${GITHUB_WORKSPACE}/blobs"
           mkdir -p "$BLOBS"
 
-          # Decode encrypted Root CA key from environment secret and decrypt
-          printf '%s' "$ROOT_CA_KEY_B64" | base64 -d > "${TMPDIR}/root-ca.key.enc"
-          COMBINED=$(derive_combined_passphrase "$PASSWORD_FELIXBOEHM" "$PASSWORD_NANTERO1")
-          pki_decrypt "${TMPDIR}/root-ca.key.enc" "${TMPDIR}/root-ca.key" "$COMBINED"
+          # Decrypt Root CA (nested: outer=felixboehm, inner=nantero1)
+          printf '%s' "$ROOT_CA_KEY_NESTED_B64" | base64 -d > "${TMPDIR}/root.nested.enc"
+          nested_decrypt_outer "${TMPDIR}/root.nested.enc" "${TMPDIR}/root.inner.enc" "$PASSWORD_FELIXBOEHM"
+          nested_decrypt_inner "${TMPDIR}/root.inner.enc" "${TMPDIR}/root-ca.key" "$PASSWORD_NANTERO1"
+          rm -f "${TMPDIR}/root.nested.enc" "${TMPDIR}/root.inner.enc"
 
-          # Generate Issuing CA for new partner
-          mkdir -p "pki/issuers/${SLUG}"
+          # Generate new Issuing CA key
+          mkdir -p "pki/issuers/${PARTNER}"
           generate_rsa_key 3072 "${TMPDIR}/issuing.key"
           create_issuing_ca "${TMPDIR}/root-ca.key" pki/root/ca-cert.pem \
-            "${TMPDIR}/issuing.key" "pki/issuers/${SLUG}/issuing-cert.pem" "$NAME" 1825
-          echo "01" > "pki/issuers/${SLUG}/issuing-cert.srl"
-
-          # Write encrypted Issuing CA key to blobs/ — NOT committed
-          # NOTE: The new partner must run setup-environments.sh to set their
-          # own password. For onboarding, we temporarily encrypt with PASSWORD_FELIXBOEHM.
-          # Re-encrypt with the partner's own password after they run setup.
-          pki_encrypt "${TMPDIR}/issuing.key" "${BLOBS}/${SLUG}-issuing-key.enc" "$PASSWORD_FELIXBOEHM"
+            "${TMPDIR}/issuing.key" "pki/issuers/${PARTNER}/issuing-cert.pem" \
+            "$PARTNER" 1825
+          echo "01" > "pki/issuers/${PARTNER}/issuing-cert.srl"
 
           # Initialize partner CRL
-          create_empty_crl "${TMPDIR}/issuing.key" "pki/issuers/${SLUG}/issuing-cert.pem" \
-            "pki/crl/${SLUG}-crl.pem" 1825
+          create_empty_crl "${TMPDIR}/issuing.key" "pki/issuers/${PARTNER}/issuing-cert.pem" \
+            "pki/crl/${PARTNER}-crl.pem" 1825
 
-          # Wipe plaintext keys
+          # Encrypt Issuing CA key with PARTNER's password from pki-root.
+          # NOTE: this password must equal the partner's PKI_PASSWORD in
+          # pki-<partner> for pki-issue/renew/revoke to work later.
+          # See workflow header comment.
+          PARTNER_UPPER=$(echo "$PARTNER" | tr '[:lower:]-' '[:upper:]_')
+          PARTNER_PW_VAR="PASSWORD_${PARTNER_UPPER}"
+          PARTNER_PW="${!PARTNER_PW_VAR:-}"
+          if [ -z "$PARTNER_PW" ]; then
+            echo "::error::No password available in pki-root for partner '${PARTNER}'"
+            echo "::error::This onboard workflow currently supports only founders whose"
+            echo "::error::password is set in pki-root as PKI_PASSWORD_${PARTNER_UPPER}."
+            echo "::error::Supporting truly-separate per-partner passwords requires a"
+            echo "::error::multi-job workflow (tracked as a future enhancement)."
+            exit 1
+          fi
+          pki_encrypt "${TMPDIR}/issuing.key" "${BLOBS}/${PARTNER}-issuing-key.enc" "$PARTNER_PW"
+
+          # Wipe plaintext
           secure_wipe "${TMPDIR}/root-ca.key"
           secure_wipe "${TMPDIR}/issuing.key"
-          rm -f "${TMPDIR}/root-ca.key.enc"
           rm -rf "${TMPDIR}"
 
-          # Verify Issuing CA chain
-          openssl verify -CAfile pki/root/ca-cert.pem "pki/issuers/${SLUG}/issuing-cert.pem"
+          # Verify Issuing CA chains to Root
+          openssl verify -CAfile pki/root/ca-cert.pem "pki/issuers/${PARTNER}/issuing-cert.pem"
 
-      - name: Upload encrypted keys as artifact
+      - name: Upload encrypted Issuing CA blob
         uses: actions/upload-artifact@v4
         with:
           name: encrypted-keys
@@ -128,37 +175,34 @@ jobs:
       - name: Remove blobs before commit
         run: rm -rf blobs
 
-      - name: Create PR
+      - name: Create PR with Issuing CA public files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SLUG="${{ inputs.partner_slug }}"
-          BRANCH="pki/onboard-${SLUG}-$(date +%Y%m%d-%H%M%S)"
+          PARTNER="${{ inputs.partner }}"
+          BRANCH="pki/onboard-${PARTNER}-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add pki/issuers/${SLUG}/ pki/crl/${SLUG}-crl.pem
-          git commit -m "feat: onboard partner ${{ inputs.partner_name }}"
+          git add "pki/issuers/${PARTNER}/" "pki/crl/${PARTNER}-crl.pem"
+          git commit -m "feat: onboard ${PARTNER} — create Issuing CA"
           git push -u origin "$BRANCH"
           gh pr create \
-            --title "feat: onboard ${{ inputs.partner_name }} to PKI" \
+            --title "feat: onboard ${PARTNER}" \
             --body "## Summary
-
-          New Issuing CA for ${{ inputs.partner_name }} (\`${SLUG}\`).
+          New Issuing CA for \`${PARTNER}\`, signed by the Root CA.
 
           ## Public files
-          - \`pki/issuers/${SLUG}/issuing-cert.pem\` — Issuing CA certificate
-          - \`pki/issuers/${SLUG}/issuing-cert.srl\` — serial counter
-          - \`pki/crl/${SLUG}-crl.pem\` — empty CRL
+          - \`pki/issuers/${PARTNER}/issuing-cert.pem\` — Issuing CA cert
+          - \`pki/issuers/${PARTNER}/issuing-cert.srl\` — serial counter
+          - \`pki/crl/${PARTNER}-crl.pem\` — empty CRL
 
           ## Encrypted Issuing CA key
-          Uploaded as workflow artifact \`encrypted-keys\` on this run.
+          Uploaded as workflow artifact \`encrypted-keys\`.
 
-          **Next step after merging:** download the artifact and run
-          \`./scripts/sync-keys-from-workflow.sh ${{ github.run_id }}\` locally to
-          populate the \`ISSUING_KEY_ENC_B64\` secret in the \`pki-${SLUG}\` GitHub Environment.
-
-          The new partner generates their end-entity key pair locally and submits a CSR
-          via pki-issue after the secret is in place.
-
-          Requires all partners' review before merge."
+          ## After merging
+          1. Sync the encrypted key to ${PARTNER}'s environment secret:
+             \`\`\`
+             ./scripts/sync-keys-from-workflow.sh ${{ github.run_id }}
+             \`\`\`
+          2. ${PARTNER} can now issue end-entity certs via pki-issue."
