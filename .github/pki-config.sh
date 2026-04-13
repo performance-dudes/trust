@@ -42,5 +42,5 @@ export EXPECTED_PKI_NANTERO1_CAN_ADMINS_BYPASS="false"
 # here (admins can't silently skip past the gates or this env).
 
 export EXPECTED_PKI_ROOT_REVIEWERS="felixboehm,Nantero1"
-export EXPECTED_PKI_ROOT_PREVENT_SELF_REVIEW="false"
+export EXPECTED_PKI_ROOT_PREVENT_SELF_REVIEW="true"
 export EXPECTED_PKI_ROOT_CAN_ADMINS_BYPASS="false"
