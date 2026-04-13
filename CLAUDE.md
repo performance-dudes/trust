@@ -39,7 +39,7 @@ This is the public PKI repository for Performance Dudes. You are helping a partn
 
 Two scripts, split by role:
 
-- **Founder**: runs BOTH scripts. Root ceremony passphrase (rare use, set via `setup-root-env.sh`) and Issuing CA passphrase (regular use, set via `setup-issuer-env.sh`). For the current onboard workflow these must be the SAME value per founder — stored in two env secrets.
+- **Founder**: runs BOTH scripts. Root ceremony passphrase (rare use, set via `setup-root-env.sh`) and Issuing CA passphrase (regular use, set via `setup-issuer-env.sh`). These two passphrases are independent — they live in different environments and no workflow reads both at once. Use different values.
 - **Non-founder partner**: runs ONLY `setup-issuer-env.sh` (no Root CA access).
 
 ```bash

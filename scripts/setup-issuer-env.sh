@@ -68,8 +68,10 @@ echo "This passphrase protects your Issuing CA private key. It is used"
 echo "whenever you issue, renew, or revoke end-entity certificates under"
 echo "your branch of the PKI."
 echo ""
-echo "⚠️  Use a DIFFERENT passphrase than your Root CA ceremony one"
-echo "    (if applicable). Store both in your password manager."
+echo "⚠️  Founders: this passphrase is INDEPENDENT of your Root CA ceremony"
+echo "    passphrase. Pick a different one — the two live in different"
+echo "    environments and no workflow reads both at once."
+echo "    Store both in your password manager."
 echo ""
 
 read -rs -p "Passphrase: " PW
