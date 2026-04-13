@@ -2,18 +2,23 @@
 
 A longer read on how our trust infrastructure works in practice.
 
-## The problem we solve
+## Why this exists
 
-Signing a contract should not be harder than paying for a coffee.
+Trust, between people who do business, usually rests on three things: **who you are, what you promised, and whether anyone can prove it later.** For most of history that was a handshake, a witness, and a piece of paper. The digital version has never been as clean.
 
-In the traditional freelance / consultancy world, a signed PDF means one of two things:
+When a customer receives a signed offer from us, they should be able to answer three questions without picking up the phone:
 
-- **Scanned signature on paper** — easy to forge, no machine verification, dated process
-- **Commercial e-signature service** (DocuSign, Adobe Sign, etc.) — expensive per-document fees, vendor lock-in, another party in the trust chain
+- **Did a real Performance Dude sign this?**
+- **Is that person still authorized to sign on our behalf today?**
+- **Has the document been altered since?**
 
-Neither is a good fit for a cooperative of independent partners who want to sign offers and contracts professionally, quickly, and transparently.
+The usual answers are unsatisfying. A scanned signature on a PDF proves nothing — anyone with Photoshop can produce one. A commercial e-signature service (DocuSign, Adobe Sign) answers the questions, but only because the customer is asked to trust *a third company* sitting between us and them. We pay that company per document. They hold the keys. If they change their terms, raise their prices, or disappear, our trust story goes with them.
 
-## Our approach
+We wanted a cleaner answer: **the cooperative itself is the trust anchor.** No middleman, no subscription, no external dependency. A customer who verifies our public certificate once can verify every signature from every Dude, forever, with tools they already have.
+
+That's what this repository is: the cryptographic backbone that lets a cooperative of independent partners vouch for each other's signatures — transparently, cheaply, and without asking anyone else's permission.
+
+## How it works
 
 We run our own PKI. Our Root Certificate Authority is cooperatively owned — neither founder alone controls it. Every partner operates an Issuing CA underneath. Every person signing on behalf of a partner has a personal end-entity certificate, issued by their partner's Issuing CA.
 
@@ -112,7 +117,7 @@ Everything else is in the open.
 
 ## Why this matters for customers
 
-When a Performance Dudes partner signs your offer, you are not trusting "Felix" or "Benny" as individuals. You are trusting:
+When a Performance Dudes partner signs your offer, you are not trusting any single Dude as an individual. You are trusting:
 
 - A cooperative that has cryptographically pinned its own membership
 - A trust root that cannot be silently altered (neither founder alone can change partners, rotate, or revoke)
