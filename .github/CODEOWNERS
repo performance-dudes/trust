@@ -1,9 +1,10 @@
 # PKI workflows require both founders to approve changes.
-# This prevents either founder from unilaterally modifying workflows
-# to exfiltrate environment secrets.
-#
-# Commented out during testing phase. Uncomment for production.
-#
-# .github/workflows/ @felixboehm @Nantero1
-# tools/pki.sh       @felixboehm @Nantero1
-# scripts/           @felixboehm @Nantero1
+# This prevents either founder from unilaterally modifying workflows,
+# helpers, setup scripts, or the policy config to exfiltrate secrets
+# or silently weaken 2-of-2 enforcement.
+
+.github/workflows/      @felixboehm @Nantero1
+.github/pki-config.sh   @felixboehm @Nantero1
+.github/pki-partners.sh @felixboehm @Nantero1
+tools/pki.sh            @felixboehm @Nantero1
+scripts/                @felixboehm @Nantero1

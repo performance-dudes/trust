@@ -29,17 +29,10 @@ export EXPECTED_PKI_FELIXBOEHM_CAN_ADMINS_BYPASS="false"
 # and their own pki-issue / pki-renew operations.
 
 # ── pki-nantero1 (also serves as gate-nantero1 for 2-of-2 ceremonies) ───────
-#
-# Current test config: felixboehm is listed as reviewer so a solo
-# developer can drive end-to-end tests without a second human.
-# Production MUST set the actual env reviewer to Nantero1 only and flip
-# this EXPECTED value to match. That is what makes the 2-of-2 real.
 
-export EXPECTED_PKI_NANTERO1_REVIEWERS="felixboehm"
+export EXPECTED_PKI_NANTERO1_REVIEWERS="Nantero1"
 export EXPECTED_PKI_NANTERO1_PREVENT_SELF_REVIEW="false"
 export EXPECTED_PKI_NANTERO1_CAN_ADMINS_BYPASS="false"
-# Production:
-# export EXPECTED_PKI_NANTERO1_REVIEWERS="Nantero1"
 
 # ── pki-root (main ceremony env, entered after both gates have cleared) ─────
 #
@@ -48,8 +41,6 @@ export EXPECTED_PKI_NANTERO1_CAN_ADMINS_BYPASS="false"
 # approves. CAN_ADMINS_BYPASS=false is the property that actually matters
 # here (admins can't silently skip past the gates or this env).
 
-export EXPECTED_PKI_ROOT_REVIEWERS="felixboehm"
+export EXPECTED_PKI_ROOT_REVIEWERS="felixboehm,Nantero1"
 export EXPECTED_PKI_ROOT_PREVENT_SELF_REVIEW="false"
 export EXPECTED_PKI_ROOT_CAN_ADMINS_BYPASS="false"
-# Production:
-# export EXPECTED_PKI_ROOT_REVIEWERS="felixboehm,Nantero1"
