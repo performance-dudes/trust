@@ -1,7 +1,11 @@
 name: "PKI: Initialize Root CA"
 
-# One-time workflow to create the Root CA. Runs in pki-root, which requires
-# both founders as reviewers — that IS the 2-of-2 gate.
+# One-time workflow to create the Root CA. 2-of-2 is enforced by the two
+# gate jobs: each runs in a single-reviewer environment (pki-felixboehm
+# reviewed only by felixboehm; pki-nantero1 reviewed only by Nantero1), so
+# both founders MUST each approve their own gate before init can run.
+# (Listing both founders on pki-root alone would not be 2-of-2 — GitHub
+# only requires one of N required reviewers to approve.)
 #
 # Does NOT create any Issuing CAs — each founder gets their Issuing CA via
 # pki-onboard after this workflow. New partners later use the same flow.
@@ -15,9 +19,45 @@ permissions:
 
 jobs:
 
+  # ── Gate: felixboehm must approve ─────────────────────────────────────────
+  gate-felixboehm:
+    name: "Gate: felixboehm approval"
+    runs-on: ubuntu-latest
+    environment: pki-felixboehm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PKI_GUARD_APP_ID }}
+          private-key: ${{ secrets.PKI_GUARD_PRIVATE_KEY }}
+      - name: Verify pki-felixboehm policy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: source tools/pki.sh && verify_environment_policy pki-felixboehm
+
+  # ── Gate: nantero1 must approve ─────────────────────────────────────────
+  gate-nantero1:
+    name: "Gate: nantero1 approval"
+    runs-on: ubuntu-latest
+    needs: gate-felixboehm
+    environment: pki-nantero1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.PKI_GUARD_APP_ID }}
+          private-key: ${{ secrets.PKI_GUARD_PRIVATE_KEY }}
+      - name: Verify pki-nantero1 policy
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: source tools/pki.sh && verify_environment_policy pki-nantero1
+
   init:
     name: Initialize Root CA
     runs-on: ubuntu-latest
+    needs: [gate-felixboehm, gate-nantero1]
     environment: pki-root
     env:
       PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}

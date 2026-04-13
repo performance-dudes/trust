@@ -1,6 +1,6 @@
 # Spec: Split founder and issuing passphrases in pki-onboard
 
-**Status:** accepted (implemented)
+**Status:** accepted (implemented, with a follow-up correction — see ["Gates correction" below](#gates-correction))
 **Date:** 2026-04-13
 **Product context:** [orga / concepts/pki-certificate-authority.md](https://github.com/performance-dudes/orga/blob/main/concepts/pki-certificate-authority.md)
 
@@ -71,16 +71,21 @@ The encrypted key artifact from Job A remains available for seven days and is co
 
 No plaintext private key ever crosses a job boundary.
 
-## Gates removed
+## Gates correction
 
-The previous onboard had two `gate-*` jobs (one in `pki-felixboehm`, one in `pki-nantero1`) that ran `verify_environment_policy` before the main job. In the old shape the single-environment `pki-root` job did not naturally touch the founders' personal envs, so the gates served as a "both founders' envs still intact" side check.
+The original version of this spec claimed the separate `gate-felixboehm` and `gate-nantero1` jobs could be dropped because `pki-root`'s required reviewers would enforce 2-of-2. **That claim is wrong.** GitHub Environment required-reviewer rules only require **one** of the listed reviewers to approve; they do not enforce N-of-N. Listing both founders on `pki-root` alone allows either founder to approve a Root CA operation single-handedly.
 
-In the new shape:
-- Job A verifies `pki-<partner>` before generating keys there.
-- Job B verifies `pki-root` before touching the Root CA, and entering `pki-root` already requires both founders to approve.
-- The 2-of-2 property comes from `pki-root`'s required reviewers, not from separate gate jobs.
+True 2-of-2 requires two distinct gate environments, each with **exactly one unique required reviewer**:
 
-The same simplification applies to `pki-init.yml` and is included in the same refactor.
+- `pki-felixboehm` reviewed only by `felixboehm`
+- `pki-nantero1` reviewed only by `Nantero1`
+
+A `gate-felixboehm` job runs in the first env, `gate-nantero1` runs in the second, and the main `pki-root` job sets `needs: [gate-felixboehm, gate-nantero1]`. Both founders must each approve their own gate before the Root CA is touched. This is the same pattern already used by `pki-rotate`, `pki-export`, and the issuing-CA branch of `pki-revoke`.
+
+This correction was applied in a follow-up PR:
+- Gates restored on `pki-init` and `pki-onboard` (Job B depends on both gates).
+- `pki-config.sh` updated so each founder env lists only its own founder as reviewer.
+- The three-job passphrase-separation split (the substance of this spec) is unchanged — the partner's Issuing CA private key still stays in `pki-<partner>`.
 
 ## Helper changes (`tools/pki.sh`)
 

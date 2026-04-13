@@ -109,16 +109,21 @@ The long-term path to eliminate this property entirely is threshold ECDSA signin
 
 Three kinds of environment, all named with the `pki-` prefix.
 
-| Environment | Required reviewers | Secrets |
+| Environment | Required reviewers (prod) | Secrets |
 |---|---|---|
-| `pki-root` | Both founders (2-of-2) | `PKI_PASSWORD_FELIXBOEHM`, `PKI_PASSWORD_NANTERO1`, `ROOT_CA_KEY_NESTED_B64`, `PKI_GUARD_APP_ID`, `PKI_GUARD_PRIVATE_KEY` |
-| `pki-<partner>` | The partner themselves | `PKI_PASSWORD`, `ISSUING_KEY_ENC_B64`, `PKI_GUARD_APP_ID`, `PKI_GUARD_PRIVATE_KEY` |
+| `pki-felixboehm` | `felixboehm` only | `PKI_PASSWORD` (Issuing CA), `ISSUING_KEY_ENC_B64`, `PKI_GUARD_APP_ID`, `PKI_GUARD_PRIVATE_KEY` |
+| `pki-nantero1` | `Nantero1` only | Same as above, per partner |
+| `pki-root` | `felixboehm, Nantero1` (secondary) | `PKI_PASSWORD_FELIXBOEHM`, `PKI_PASSWORD_NANTERO1`, `ROOT_CA_KEY_NESTED_B64`, `PKI_GUARD_APP_ID`, `PKI_GUARD_PRIVATE_KEY` |
+
+Note the single-reviewer pattern on the founder envs. It is deliberate. GitHub Environment "required reviewers" only requires one of the listed reviewers to approve — it does not enforce N-of-N. So if both founders were listed on `pki-root` alone, either one could approve a Root CA operation single-handedly. To actually require both founders to each approve, every Root-CA-touching workflow goes through two gate jobs — `gate-felixboehm` running in `pki-felixboehm` (where only `felixboehm` is allowed to approve) and `gate-nantero1` running in `pki-nantero1` (where only `Nantero1` is allowed to approve) — before the `pki-root` job itself starts. That is what makes 2-of-2 real.
+
+`pki-root`'s own required-reviewer list is a secondary safety net; the actual 2-of-2 enforcement is in the two gate jobs.
 
 Secrets are **write-only** — neither the UI nor any API surface reads them back. They are injected into runner memory after environment approval and destroyed with the ephemeral runner when the job ends. Each partner sets their own secrets using the local scripts in [`scripts/`](../scripts/); no one ever types another partner's passphrase.
 
 ### Production vs test configuration
 
-During test runs, the expected reviewer sets in `pki-config.sh` are relaxed to a single approver per environment and `prevent_self_review` is `false`. Production configuration (commented out in `pki-config.sh`) uses the full 2-of-2 reviewer list on `pki-root` and enables `prevent_self_review` so a founder cannot rubber-stamp their own trigger. Flipping to production is a CODEOWNERS-protected edit plus a manual update of the environment settings in GitHub.
+In the current test config, `pki-nantero1` and `pki-root` are temporarily configured with `felixboehm` as reviewer so a solo developer can drive end-to-end tests without a second human. Production MUST flip these to the real values (`pki-nantero1` reviewed only by `Nantero1`; `pki-root` reviewed by both founders) and update `pki-config.sh` accordingly. The production values are documented alongside the current test values in `pki-config.sh`.
 
 ## Policy verification via GitHub App
 
@@ -141,26 +146,29 @@ All seven workflows are `workflow_dispatch` only. Passphrases and encrypted key 
 
 ### `pki-init` — Initialize Root CA (2-of-2)
 
-Env: `pki-root`. Run once at the start of a deployment.
-
-1. Fail if `pki/root/ca-cert.pem` already exists.
-2. Verify `pki-root` policy.
-3. Generate Root CA key (RSA-4096), self-signed cert (10-year validity, `CA:TRUE`, `pathlen:1`), and empty Root CRL.
-4. Nested-encrypt the Root CA key with both founder passphrases (`nested_encrypt_both`).
-5. Upload the encrypted blob as an artifact (7-day retention) — consumed by `sync-keys-from-workflow.sh` to set `ROOT_CA_KEY_NESTED_B64` in `pki-root`.
-6. Commit the Root CA public cert, `ca-cert.srl`, and empty CRL. Open PR.
-
-### `pki-onboard` — Create Partner Issuing CA (2-of-2)
-
-Env: `pki-<partner>` and `pki-root` (three-job split — see [`docs/specs/onboard-split-passphrases.md`](specs/onboard-split-passphrases.md)). Used for the initial founders and every future partner. No special case.
+Runs once at the start of a deployment.
 
 | Job | Environment | Role |
 |---|---|---|
-| `generate-issuing-key` | `pki-<partner>` | Generate RSA-3072 keypair, build CSR, encrypt key with partner's `PKI_PASSWORD`. Upload both as artifacts. |
-| `sign-csr` | `pki-root` | Decrypt nested Root CA, sign CSR as Issuing CA cert (5-year, `CA:TRUE`, `pathlen:0`). Upload signed cert. |
-| `finalize-and-commit` | `pki-<partner>` | Re-decrypt Issuing CA key, build empty CRL, commit cert + CRL, open PR. |
+| `gate-felixboehm` | `pki-felixboehm` | Reviewer = `felixboehm` only. felixboehm must approve. Verifies env policy. |
+| `gate-nantero1` | `pki-nantero1` | Reviewer = `Nantero1` only. Nantero1 must approve. Verifies env policy. |
+| `init` | `pki-root` | `needs: [gate-felixboehm, gate-nantero1]`. Generates Root CA (RSA-4096, 10 years, `CA:TRUE`, `pathlen:1`), empty Root CRL. Nested-encrypts the key with both founder passphrases. Uploads encrypted blob as artifact. Commits public cert + CRL and opens PR. |
 
-Only the CSR (public) and the signed cert (public) cross environment boundaries. The Issuing CA private key is generated, used, and encrypted inside `pki-<partner>` and never enters `pki-root`. The 2-of-2 property comes from `pki-root`'s required-reviewer rule on the `sign-csr` job.
+The two gate jobs are where 2-of-2 is actually enforced (see [Tampering protection](#tampering-protection) for why this gate pattern exists).
+
+### `pki-onboard` — Create Partner Issuing CA (2-of-2)
+
+Used for the initial founders and every future partner. No special case. Three-job passphrase-split described in [`docs/specs/onboard-split-passphrases.md`](specs/onboard-split-passphrases.md), plus the same gate pattern as `pki-init`.
+
+| Job | Environment | Role |
+|---|---|---|
+| `gate-felixboehm` | `pki-felixboehm` | 2-of-2 gate. |
+| `gate-nantero1` | `pki-nantero1` | 2-of-2 gate. |
+| `generate-issuing-key` (A) | `pki-<partner>` | Generate RSA-3072 keypair, build CSR, encrypt key with partner's `PKI_PASSWORD`. Upload both as artifacts. |
+| `sign-csr` (B) | `pki-root` | `needs: [gate-felixboehm, gate-nantero1, generate-issuing-key]`. Decrypt nested Root CA, sign CSR as Issuing CA cert (5-year, `CA:TRUE`, `pathlen:0`). Upload signed cert. |
+| `finalize-and-commit` (C) | `pki-<partner>` | `needs: sign-csr`. Re-decrypt Issuing CA key, build empty CRL, commit cert + CRL, open PR. |
+
+Only the CSR (public) and the signed cert (public) cross environment boundaries. The Issuing CA private key is generated, used, and encrypted inside `pki-<partner>` and never enters `pki-root`.
 
 ### `pki-issue` — Sign an End-Entity Cert (1-of-N)
 
@@ -265,10 +273,10 @@ Four layers stack to prevent any single actor (including a founder with a compro
 
 1. **CODEOWNERS** (`.github/CODEOWNERS`) requires both founders to approve changes to `.github/workflows/`, `.github/pki-config.sh`, `.github/pki-partners.sh`, `tools/pki.sh`, `scripts/`.
 2. **Branch protection on `main`** requires PR review and blocks force pushes.
-3. **Required environment reviewers** (enforced by GitHub) block a workflow from entering `pki-root` without both founders clicking approve.
-4. **Runtime `verify_environment_policy`** asserts that the environment's protection rules actually match `pki-config.sh` *at the moment the job runs*, so an in-UI loosening between PR merge and workflow dispatch is caught.
+3. **Dual single-reviewer gate jobs.** Every Root-CA-touching workflow (`pki-init`, `pki-onboard`, `pki-rotate`, `pki-export`, and the issuing-CA branch of `pki-revoke`) declares two explicit gate jobs: `gate-felixboehm` in env `pki-felixboehm` (required reviewer = `felixboehm` only) and `gate-nantero1` in env `pki-nantero1` (required reviewer = `Nantero1` only). The main `pki-root` job `needs:` both. This is what actually enforces 2-of-2 — stock GitHub required-reviewers would only require one of the listed reviewers to approve, so a single env listing both founders is not enough.
+4. **Runtime `verify_environment_policy`** asserts that the environment's protection rules actually match `pki-config.sh` *at the moment the job runs*, including the single-reviewer constraint on each gate env. An in-UI loosening between PR merge and workflow dispatch is caught here.
 
-A successful attack requires compromising both founders' accounts **and** bypassing CODEOWNERS **and** avoiding the runtime check. Not impossible; not cheap.
+A successful attack requires compromising both founders' accounts **and** bypassing CODEOWNERS **and** evading the runtime policy check. Not impossible; not cheap.
 
 ## Known limitations and threat model
 
