@@ -87,7 +87,7 @@ This correction was applied in a follow-up PR:
 - `pki-config.sh` updated so each founder env lists only its own founder as reviewer.
 - The three-job passphrase-separation split (the substance of this spec) is unchanged — the partner's Issuing CA private key still stays in `pki-<partner>`.
 
-## Helper changes (`tools/pki.sh`)
+## Helper changes (`.github/pki.sh`)
 
 Split `create_issuing_ca` into:
 

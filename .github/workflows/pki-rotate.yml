@@ -33,7 +33,7 @@ jobs:
       - name: Verify pki-felixboehm policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-felixboehm
+        run: source .github/pki.sh && verify_environment_policy pki-felixboehm
 
   # ── Gate: nantero1 must approve ─────────────────────────────────────────
   gate-nantero1:
@@ -51,7 +51,7 @@ jobs:
       - name: Verify pki-nantero1 policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-nantero1
+        run: source .github/pki.sh && verify_environment_policy pki-nantero1
 
   # ── Rotate: Re-key Root CA and re-sign all Issuing CAs ───────────────────
   rotate:
@@ -77,11 +77,11 @@ jobs:
       - name: Verify pki-root policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-root
+        run: source .github/pki.sh && verify_environment_policy pki-root
 
       - name: Rotate Root CA
         run: |
-          source tools/pki.sh
+          source .github/pki.sh
           TMPDIR="$(mktemp -d)"
           BLOBS="${GITHUB_WORKSPACE}/blobs"
           mkdir -p "$BLOBS"

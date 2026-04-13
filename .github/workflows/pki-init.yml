@@ -34,7 +34,7 @@ jobs:
       - name: Verify pki-felixboehm policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-felixboehm
+        run: source .github/pki.sh && verify_environment_policy pki-felixboehm
 
   # ── Gate: nantero1 must approve ─────────────────────────────────────────
   gate-nantero1:
@@ -52,7 +52,7 @@ jobs:
       - name: Verify pki-nantero1 policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-nantero1
+        run: source .github/pki.sh && verify_environment_policy pki-nantero1
 
   init:
     name: Initialize Root CA
@@ -81,11 +81,11 @@ jobs:
       - name: Verify pki-root policy
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: source tools/pki.sh && verify_environment_policy pki-root
+        run: source .github/pki.sh && verify_environment_policy pki-root
 
       - name: Generate Root CA
         run: |
-          source tools/pki.sh
+          source .github/pki.sh
 
           mkdir -p pki/root pki/certs pki/crl pki/csrs pki/issuers
 

@@ -36,7 +36,7 @@ jobs:
 
       - name: Renew certificate
         run: |
-          source tools/pki.sh
+          source .github/pki.sh
           ISSUER="${{ inputs.issuer }}"
           CSR="${{ inputs.csr_path }}"
 

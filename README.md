@@ -52,10 +52,11 @@ Private keys never enter this public repo.
 
 ```
 .github/
+  pki.sh             Shared helper functions (OpenSSL wrappers)
   pki-partners.sh    Partner GitHub usernames + display names
   pki-config.sh      Expected environment protection rules
+  CODEOWNERS         Both founders required for changes in .github/ and scripts/
   workflows/         Seven PKI management workflows (init, issue, renew, revoke, rotate, onboard, export)
-tools/pki.sh         Shared helper functions (OpenSSL wrappers)
 scripts/
   setup-root-env.sh           One-time per-founder: Root CA ceremony passphrase
   setup-issuer-env.sh         One-time per-partner: Issuing CA passphrase
@@ -86,7 +87,7 @@ pki/
 
 1. **Two-tier CA hierarchy.** A 2-of-2 Root CA signs per-partner Issuing CAs, which sign end-entity certificates. Each partner operates autonomously within their own Issuing CA branch.
 2. **Encrypted at rest.** All CA private keys are encrypted with passphrases that only the respective partners know. The Root CA requires both founders' passphrases combined (nested encryption); each Issuing CA requires only its respective partner's passphrase.
-3. **Approval gates.** GitHub Environments with required reviewers enforce 2-of-2 at the operational level. All partners must approve before `pki-root` secrets are exposed to a workflow runner.
+3. **Approval gates.** 2-of-2 for Root CA ceremonies is enforced by two gate jobs, each running in a single-reviewer GitHub Environment (`pki-felixboehm` reviewed only by `felixboehm`; `pki-nantero1` reviewed only by `Nantero1`). Both gates must be approved by their respective unique reviewer before the Root CA is touched. GitHub's stock "required reviewers" mechanism only enforces one-of-N, so the dual single-reviewer gates are the real 2-of-2 layer.
 4. **Local signing.** End-entity private keys are generated locally by each member. Only a CSR (public material) is submitted to this repo for signing. Members never upload a private key.
 5. **Public certs, everywhere verifiable.** The Root CA cert is published in this repo. Anyone can fetch it and verify a signature without trusting a third party.
 6. **Defense in depth.** CODEOWNERS prevents unilateral workflow modification. Environment approval gates prevent unilateral operations. Strong passphrases provide the last cryptographic backstop.
@@ -107,76 +108,117 @@ To use this repo for your own team:
 
 ## Setup (one-time)
 
-Run from a local clone of this repo.
+Runs once at the start of a deployment. The current `main` of this repo is production-configured: `pki-config.sh` declares the production reviewer lists, CODEOWNERS protects the sensitive code paths, and no Root CA or Issuing CAs exist yet.
 
-### 1. Each founder sets their Root CA ceremony passphrase
+This walks through every step, who does it, and when. Founder = felixboehm or Nantero1.
 
-Founders only. Run from your own machine:
+### 1. Configure the three GitHub Environments (one founder, via API or UI)
+
+| Environment | Required reviewers | `prevent_self_review` |
+|---|---|---|
+| `pki-felixboehm` | `felixboehm` only | false |
+| `pki-nantero1` | `Nantero1` only | false |
+| `pki-root` | `felixboehm, Nantero1` | false |
+
+The *single* reviewer on each founder env is deliberate — that is how 2-of-2 is enforced. If you add both founders to either gate env, you silently downgrade to 1-of-2. See [`docs/architecture.md`](docs/architecture.md#github-environments) for the reasoning.
+
+CLI shortcut (one founder runs, for each env):
+
+```bash
+gh api --method PUT /repos/performance-dudes/trust/environments/pki-felixboehm \
+  -F 'reviewers[][type]=User' -F 'reviewers[][id]=<felixboehm-user-id>' \
+  -F prevent_self_reviews=false
+
+gh api --method PUT /repos/performance-dudes/trust/environments/pki-nantero1 \
+  -F 'reviewers[][type]=User' -F 'reviewers[][id]=<Nantero1-user-id>' \
+  -F prevent_self_reviews=false
+
+gh api --method PUT /repos/performance-dudes/trust/environments/pki-root \
+  -F 'reviewers[][type]=User' -F 'reviewers[][id]=<felixboehm-user-id>' \
+  -F 'reviewers[][type]=User' -F 'reviewers[][id]=<Nantero1-user-id>' \
+  -F prevent_self_reviews=false
+```
+
+Get user IDs via `gh api /users/<login> --jq .id`.
+
+### 2. Enable branch protection on `main` (one founder, UI)
+
+- Require a pull request before merging.
+- Require approvals from CODEOWNERS.
+- Block force pushes. Block deletions.
+
+### 3. Register the PKI Guard GitHub App
+
+See [`docs/github-app-setup.md`](docs/github-app-setup.md). Install it on this repo and set `PKI_GUARD_APP_ID` + `PKI_GUARD_PRIVATE_KEY` as secrets in **each** of the three environments. This is what every workflow uses for `verify_environment_policy`.
+
+### 4. Each founder sets their Root CA ceremony passphrase (each founder, own machine)
+
+Rare-use passphrase, stored in `pki-root` as `PKI_PASSWORD_<FOUNDER>`. Used during init, rotate, onboard, export.
 
 ```bash
 ./scripts/setup-root-env.sh felixboehm    # felixboehm runs this
-./scripts/setup-root-env.sh nantero1      # nantero1 runs this
+./scripts/setup-root-env.sh nantero1      # Nantero1 runs this
 ```
 
-Each founder types their own passphrase. This is used rarely (init, rotate, onboard, export).
+Each founder types their own passphrase; no one else ever sees it. Save it in your password manager — GitHub secrets are write-only.
 
-### 2. Each partner sets their Issuing CA passphrase
+### 5. Each partner sets their Issuing CA passphrase (each partner, own machine)
 
-Every partner (founders + future partners). Run from your own machine:
+Day-to-day passphrase, stored in `pki-<partner>` as `PKI_PASSWORD`. Used for `pki-issue`, `pki-renew`, `pki-revoke` (end-entity), and during the partner's `pki-onboard`.
 
 ```bash
 ./scripts/setup-issuer-env.sh felixboehm  # felixboehm runs this
-./scripts/setup-issuer-env.sh nantero1    # nantero1 runs this
+./scripts/setup-issuer-env.sh nantero1    # Nantero1 runs this
 ```
 
-Each partner types their own passphrase. Used regularly (issue, renew, revoke end-entity certs).
+**Use a different passphrase** than your Root CA one. The two live in different envs and no workflow reads both at once. Save both in your password manager.
 
-Save each passphrase in your password manager — secrets are write-only.
-
-### 3. Initialize the Root CA
+### 6. Initialize the Root CA (either founder triggers, both approve)
 
 ```bash
 gh workflow run pki-init.yml --repo performance-dudes/trust
 ```
 
-Both founders approve the gates. The workflow creates **only the Root CA** and uploads it as an encrypted artifact.
+The workflow is four jobs:
 
-### 4. Post-init sync
+| Job | Env | Reviewer who must approve |
+|---|---|---|
+| `gate-felixboehm` | `pki-felixboehm` | felixboehm |
+| `gate-nantero1` | `pki-nantero1` | Nantero1 |
+| `init` | `pki-root` | either founder (secondary gate; gates above already enforced 2-of-2) |
+| *(the init job creates the Root CA, nested-encrypts the key with both founder passphrases, uploads the encrypted blob as artifact, commits the Root cert + empty CRL)* | | |
+
+Approve each gate from your own GitHub account. The workflow ends by opening a PR with the Root CA public cert. Both founders review and merge (CODEOWNERS requires both).
+
+### 7. Post-init sync (either founder, own machine)
 
 ```bash
 ./scripts/sync-keys-from-workflow.sh <run-id>
 ```
 
-### 5. Onboard each partner (including founders themselves)
+This downloads the encrypted Root CA blob from the workflow artifact and sets it as `ROOT_CA_KEY_NESTED_B64` in `pki-root`. The blob is already encrypted with nested passphrases; neither Claude Code nor the runner ever holds plaintext during this sync. It also copies the blob into the private `trust-keys` repo as an audit trail (local commit only; push is up to you).
 
-Same flow for every partner — founders first, future partners later:
+### 8. Onboard each founder as an Issuing CA (repeat for each founder)
+
+Same flow for founders and for every future partner. `pki-onboard` uses the three-job passphrase split described in [`docs/specs/onboard-split-passphrases.md`](docs/specs/onboard-split-passphrases.md), plus the two 2-of-2 gates.
 
 ```bash
 gh workflow run pki-onboard.yml -f partner=felixboehm
-# approve gates, merge PR, then sync
-./scripts/sync-keys-from-workflow.sh <run-id>
+# approve: gate-felixboehm, gate-nantero1, Job A (pki-felixboehm), Job C (pki-felixboehm)
+# then review + merge the PR the workflow opens
+./scripts/sync-keys-from-workflow.sh <run-id>    # sets ISSUING_KEY_ENC_B64 in pki-felixboehm
 
 gh workflow run pki-onboard.yml -f partner=nantero1
-# same
-./scripts/sync-keys-from-workflow.sh <run-id>
+# approve: gate-felixboehm, gate-nantero1, Job A (pki-nantero1), Job C (pki-nantero1)
+# merge PR
+./scripts/sync-keys-from-workflow.sh <run-id>    # sets ISSUING_KEY_ENC_B64 in pki-nantero1
 ```
 
-Each onboard run creates the partner's Issuing CA (encrypted with their password), signs it with the Root CA, and commits the public cert.
+After both founders are onboarded, `pki-issue` and `pki-renew` are operational.
 
-### 4. Review and merge the public certs PR
+### 9. Onboarding a future partner
 
-The init workflow opens a PR with the Root CA and per-partner Issuing CA public certificates. CODEOWNERS requires both founders to approve.
-
-After merging, subsequent workflows (`pki-issue`, `pki-renew`, etc.) are operational.
-
-### 5. (Production only) Harden the setup
-
-Once testing is complete and you're ready for production:
-
-- Enable required reviewers on all environments (all partners)
-- Enable `prevent_self_review` on all environments
-- Uncomment the entries in `.github/CODEOWNERS`
-- Enable branch protection on `main`: require PR reviews, require CODEOWNERS review, prevent force pushes
+Add them to `.github/pki-partners.sh` and `.github/pki-config.sh` (with their own `EXPECTED_PKI_<USERNAME>_*` entries) via a CODEOWNERS-protected PR. Create the `pki-<username>` environment with only that user as reviewer. They run `setup-issuer-env.sh`. Either founder triggers `pki-onboard -f partner=<username>`. Same four-gate approval flow.
 
 ## Daily operations
 

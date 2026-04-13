@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Shared PKI helper for GitHub Actions workflows.
-# Source this file: source tools/pki.sh
+# Source this file: source .github/pki.sh
 #
 # Encryption uses OpenSSL (AES-256-CBC with PBKDF2, 600k iterations).
 # OpenSSL is pre-installed on all GitHub runners and macOS/Linux.

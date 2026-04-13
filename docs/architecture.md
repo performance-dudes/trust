@@ -82,7 +82,7 @@ Encrypted CA key blobs are also mirrored into the private [`performance-dudes/tr
 
 ### Nested encryption details
 
-`tools/pki.sh` provides four helpers for the nested scheme:
+`.github/pki.sh` provides four helpers for the nested scheme:
 
 ```
 nested_encrypt_both <plain> <nested.enc> <inner_pw> <outer_pw>
@@ -130,7 +130,7 @@ In the current test config, `pki-nantero1` and `pki-root` are temporarily config
 The **PKI Guard** GitHub App is installed on the `trust` repo and exists solely to mint short-lived tokens with `Administration:Read` permission. Every workflow job starts by:
 
 1. Minting a PKI Guard token via `actions/create-github-app-token`.
-2. Calling `verify_environment_policy <env_name>` from `tools/pki.sh`.
+2. Calling `verify_environment_policy <env_name>` from `.github/pki.sh`.
 3. The helper queries `/repos/<repo>/environments/<env_name>` and asserts three properties against `pki-config.sh`:
    - `can_admins_bypass` matches the expected value
    - Required reviewers match the expected list (sorted, unique)
@@ -209,7 +209,7 @@ End-entity certs are unchanged — they chain to Issuing CAs, not directly to Ro
 
 Env: `pki-root`. No inputs. Produces a one-time-passphrase-encrypted copy of the Root CA key as a workflow artifact (1-hour expiry); the one-time passphrase is written to the workflow summary (visible only to repo admins). This is the mechanism for reconstituting the PKI outside GitHub if we ever need to leave.
 
-## Helper functions (`tools/pki.sh`)
+## Helper functions (`.github/pki.sh`)
 
 ```
 # Symmetric crypto (AES-256-CBC + PBKDF2 600k, HMAC-SHA-512)
@@ -271,7 +271,7 @@ All helpers are idempotent and fail loudly with `set -euo pipefail` (sourced fro
 
 Four layers stack to prevent any single actor (including a founder with a compromised account) from silently weakening the PKI:
 
-1. **CODEOWNERS** (`.github/CODEOWNERS`) requires both founders to approve changes to `.github/workflows/`, `.github/pki-config.sh`, `.github/pki-partners.sh`, `tools/pki.sh`, `scripts/`.
+1. **CODEOWNERS** (`.github/CODEOWNERS`) requires both founders to approve changes to anything under `.github/` (workflows, `pki.sh`, `pki-config.sh`, `pki-partners.sh`, the CODEOWNERS file itself) and under `scripts/` (setup scripts that read passphrases).
 2. **Branch protection on `main`** requires PR review and blocks force pushes.
 3. **Dual single-reviewer gate jobs.** Every Root-CA-touching workflow (`pki-init`, `pki-onboard`, `pki-rotate`, `pki-export`, and the issuing-CA branch of `pki-revoke`) declares two explicit gate jobs: `gate-felixboehm` in env `pki-felixboehm` (required reviewer = `felixboehm` only) and `gate-nantero1` in env `pki-nantero1` (required reviewer = `Nantero1` only). The main `pki-root` job `needs:` both. This is what actually enforces 2-of-2 — stock GitHub required-reviewers would only require one of the listed reviewers to approve, so a single env listing both founders is not enough.
 4. **Runtime `verify_environment_policy`** asserts that the environment's protection rules actually match `pki-config.sh` *at the moment the job runs*, including the single-reviewer constraint on each gate env. An in-UI loosening between PR merge and workflow dispatch is caught here.

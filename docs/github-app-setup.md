@@ -90,7 +90,7 @@ The workflows use `actions/create-github-app-token@v1` to generate a short-lived
   env:
     GH_TOKEN: ${{ steps.app-token.outputs.token }}
   run: |
-    source tools/pki.sh
+    source .github/pki.sh
     verify_environment_policy pki-felixboehm
 ```
 

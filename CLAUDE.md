@@ -6,7 +6,7 @@ This is the public PKI repository for Performance Dudes. You are helping a partn
 
 - **This repo is public.** Anything committed here is visible to the world. Never commit plaintext secrets, private keys, passphrases, or anything that should not be public.
 - **Private keys never live here.** The CA private keys are encrypted and stored as GitHub Environment Secrets and (optionally) in the private `trust-keys` repo. End-entity private keys live only on each signer's laptop.
-- **Workflows are protected.** Changes to `.github/workflows/`, `.github/pki-config.sh`, `.github/pki-partners.sh`, `tools/pki.sh`, and `scripts/` require CODEOWNERS approval (see `.github/CODEOWNERS`) and must go via PR. Do not push directly to `main`.
+- **Workflows and helpers are protected.** Anything under `.github/` (workflows, `pki.sh`, config) or `scripts/` requires CODEOWNERS approval from both founders (see `.github/CODEOWNERS`) and must go via PR. Do not push directly to `main`.
 - **Secret values are never visible to you.** GitHub environment secrets are write-only. You cannot read them via any API. Do not attempt.
 
 ## What you can do
@@ -62,10 +62,10 @@ User types their passphrase into the `read -rs` prompt themselves — you never 
 ```
 .github/
   workflows/*.yml            PKI management workflows
-  pki-config.sh              Expected environment policy (CODEOWNERS-protected)
+  pki.sh                     Shared helper functions (sourced by every workflow)
+  pki-config.sh              Expected environment policy
   pki-partners.sh            List of active partner GitHub usernames
-  CODEOWNERS                 Who must review workflow/tooling changes
-tools/pki.sh                 Shared helper functions
+  CODEOWNERS                 Both founders required for changes in .github/ and scripts/
 scripts/
   setup-root-env.sh          Founder-only: Root CA ceremony passphrase
   setup-issuer-env.sh        Every partner: Issuing CA passphrase
