@@ -9,3 +9,4 @@
 # To add or remove partners, edit this file via PR (protected by CODEOWNERS).
 
 PARTNERS=("felixboehm" "nantero1")
+# test comment added by Claude for branch-protection test on 2026-04-14T17:24:10Z
