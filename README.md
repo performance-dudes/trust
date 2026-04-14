@@ -78,7 +78,7 @@ pki/
 | `pki-renew` | `pki-<github-username>` | 1-of-N | Re-sign a CSR for renewal |
 | `pki-revoke` | tiered | 1-of-N or 2-of-2 | Revoke a cert or Issuing CA |
 | `pki-onboard` | `pki-root` | 2-of-2 | Add a new partner (new Issuing CA) |
-| `pki-rotate` | `pki-root` | 2-of-2 | Rotate the Root CA key |
+| `pki-rotate-root-ca` | `pki-root` | 2-of-2 | Rotate the Root CA cert + key (founder passphrases unchanged) |
 | `pki-export` | `pki-root` | 2-of-2 | Export Root CA for escape hatch |
 
 **PDF signing is NOT a workflow.** It happens locally via the `pd` plugin (coming soon). Signing images and private end-entity keys live on the signer's laptop and never touch GitHub.

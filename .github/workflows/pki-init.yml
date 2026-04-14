@@ -68,7 +68,7 @@ jobs:
       - name: Fail if Root CA already exists
         run: |
           if [ -f pki/root/ca-cert.pem ]; then
-            echo "::error::Root CA already initialized. Use pki-rotate to change it."
+            echo "::error::Root CA already initialized. Use pki-rotate-root-ca to change it."
             exit 1
           fi
 

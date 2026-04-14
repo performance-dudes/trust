@@ -47,7 +47,7 @@ Root CA                (RSA-4096, 10-year validity, 2-of-2 founders)
   +- (future) Issuing CA <partner>   (issued by Root via 2-of-2 onboard)
 ```
 
-Three tiers. Root CA is touched only during 2-of-2 ceremonies: `pki-init`, `pki-onboard`, partner-level `pki-revoke`, `pki-rotate`, `pki-export`. Issuing CAs are touched during 1-of-N operations: `pki-issue`, `pki-renew`, end-entity `pki-revoke`. End-entity keys never touch GitHub at all — they are generated locally on each signer's laptop.
+Three tiers. Root CA is touched only during 2-of-2 ceremonies: `pki-init`, `pki-onboard`, partner-level `pki-revoke`, `pki-rotate-root-ca`, `pki-export`. Issuing CAs are touched during 1-of-N operations: `pki-issue`, `pki-renew`, end-entity `pki-revoke`. End-entity keys never touch GitHub at all — they are generated locally on each signer's laptop.
 
 Separating Issuing CAs per partner means a passphrase leak reaches exactly one branch of the tree. The 2-of-2 Root CA can revoke the compromised Issuing CA without affecting other partners.
 
@@ -91,7 +91,7 @@ nested_decrypt_inner <inner.enc> <plain> <inner_pw>
 nested_encrypt_inner / nested_encrypt_outer     # for multi-phase flows
 ```
 
-`pki-init` uses `nested_encrypt_both` once (both passphrases available in one job). Decryption in `pki-onboard` Job B, `pki-rotate`, `pki-export` uses `_outer` then `_inner` sequentially.
+`pki-init` uses `nested_encrypt_both` once (both passphrases available in one job). Decryption in `pki-onboard` Job B and `pki-rotate-root-ca` uses `_outer` then `_inner` sequentially. `pki-export` does not decrypt — it simply re-emits the existing encrypted blob.
 
 ### Shared-runner property for 2-of-2 operations
 
@@ -193,25 +193,29 @@ Two jobs gated by the `target_type` input:
 - `end-entity` target: env `pki-<issuer>`, 1-of-N. Decrypt Issuing CA key, add serial to `<issuer>-crl.pem`, re-sign, delete cert. Open PR.
 - `issuing-ca` target: env `pki-root`, 2-of-2. Decrypt Root CA, add Issuing CA serial to `root-crl.pem`, re-sign, remove `pki/issuers/<partner>/`. Open PR.
 
-### `pki-rotate` — Rotate the Root CA (2-of-2)
+### `pki-rotate-root-ca` — Rotate the Root CA cert + key (2-of-2)
 
-Env: `pki-root`. **No `workflow_dispatch` inputs** — workflow inputs persist in run metadata on a public repo, so passphrases are never passed that way. Instead, each founder sets their NEW passphrase as an extra env secret in `pki-root` BEFORE triggering:
+Env: `pki-root`. No inputs. Founder passphrases are **not** rotated by this workflow — only the Root CA private key and certificate. The new Root key is re-encrypted with the same nested passphrases that protected the old one.
 
-- `PKI_PASSWORD_FELIXBOEHM_NEW` (set by felixboehm)
-- `PKI_PASSWORD_NANTERO1_NEW` (set by nantero1)
+(Passphrase rotation is a separate concern with a different threat model and would warrant its own workflow, e.g. `pki-rotate-root-secrets`. Not built yet — YAGNI.)
 
-The workflow refuses to start if either is missing. Steps:
+Steps:
 
-1. Decrypt old Root CA key (nested, current passphrases).
-2. Generate new Root CA key and self-signed cert.
-3. Re-sign every existing Issuing CA cert with the new Root (random 128-bit serials, full CRLDP/AIA extensions).
-4. Re-create the empty Root CRL signed by the new key.
-5. Nested-encrypt new Root key with the NEW passphrases.
+1. Decrypt old Root CA key (nested, existing passphrases).
+2. Generate new Root CA keypair and self-signed cert.
+3. Re-sign every existing Issuing CA cert with the new Root (preserves Issuing CA pubkey, gives a new serial + validity, full CRLDP/AIA extensions).
+4. Re-create the empty Root CRL signed by the new Root key.
+5. Nested-encrypt the new Root key with the same founder passphrases.
 6. Archive old Root cert under `pki/root/archive/`. Commit + open PR.
 
-After the PR merges and `sync-keys-from-workflow.sh` updates `ROOT_CA_KEY_NESTED_B64`, each founder must promote their `_NEW` slot into the canonical `PKI_PASSWORD_<FOUNDER>` slot and delete the `_NEW`. Until then the new key cannot be decrypted.
+After the PR merges, `sync-keys-from-workflow.sh` updates `ROOT_CA_KEY_NESTED_B64`. No founder action needed beyond that — passphrases didn't change.
 
-End-entity certs are unchanged — they chain to Issuing CAs, not directly to Root.
+What survives the rotation:
+- Issuing CA private keys (unchanged, their pubkeys remain the same)
+- End-entity certificates (chain to Issuing CAs, never directly to Root)
+- Founder passphrases
+
+What customers do: re-import the new `pki/root/ca-cert.pem` into their trust store. Previously-signed PDFs continue to verify cleanly.
 
 ### `pki-export` — Escape Hatch (2-of-2)
 
@@ -290,7 +294,7 @@ Four layers stack to prevent any single actor (including a founder with a compro
 
 1. **CODEOWNERS** (`.github/CODEOWNERS`) requires both founders to approve changes to anything under `.github/` (workflows, `pki.sh`, `pki-config.sh`, `pki-partners.sh`, the CODEOWNERS file itself) and under `scripts/` (setup scripts that read passphrases).
 2. **Branch protection on `main`** requires PR review and blocks force pushes.
-3. **Dual single-reviewer gate jobs.** Every Root-CA-touching workflow (`pki-init`, `pki-onboard`, `pki-rotate`, `pki-export`, and the issuing-CA branch of `pki-revoke`) declares two explicit gate jobs: `gate-felixboehm` in env `pki-felixboehm` (required reviewer = `felixboehm` only) and `gate-nantero1` in env `pki-nantero1` (required reviewer = `Nantero1` only). The main `pki-root` job `needs:` both. This is what actually enforces 2-of-2 — stock GitHub required-reviewers would only require one of the listed reviewers to approve, so a single env listing both founders is not enough.
+3. **Dual single-reviewer gate jobs.** Every Root-CA-touching workflow (`pki-init`, `pki-onboard`, `pki-rotate-root-ca`, `pki-export`, and the issuing-CA branch of `pki-revoke`) declares two explicit gate jobs: `gate-felixboehm` in env `pki-felixboehm` (required reviewer = `felixboehm` only) and `gate-nantero1` in env `pki-nantero1` (required reviewer = `Nantero1` only). The main `pki-root` job `needs:` both. This is what actually enforces 2-of-2 — stock GitHub required-reviewers would only require one of the listed reviewers to approve, so a single env listing both founders is not enough.
 4. **Runtime `verify_environment_policy`** asserts that the environment's protection rules actually match `pki-config.sh` *at the moment the job runs*, including the single-reviewer constraint on each gate env. An in-UI loosening between PR merge and workflow dispatch is caught here.
 
 A successful attack requires compromising both founders' accounts **and** bypassing CODEOWNERS **and** evading the runtime policy check. Not impossible; not cheap.

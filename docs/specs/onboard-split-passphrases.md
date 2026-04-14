@@ -80,7 +80,7 @@ True 2-of-2 requires two distinct gate environments, each with **exactly one uni
 - `pki-felixboehm` reviewed only by `felixboehm`
 - `pki-nantero1` reviewed only by `Nantero1`
 
-A `gate-felixboehm` job runs in the first env, `gate-nantero1` runs in the second, and the main `pki-root` job sets `needs: [gate-felixboehm, gate-nantero1]`. Both founders must each approve their own gate before the Root CA is touched. This is the same pattern already used by `pki-rotate`, `pki-export`, and the issuing-CA branch of `pki-revoke`.
+A `gate-felixboehm` job runs in the first env, `gate-nantero1` runs in the second, and the main `pki-root` job sets `needs: [gate-felixboehm, gate-nantero1]`. Both founders must each approve their own gate before the Root CA is touched. This is the same pattern already used by `pki-rotate-root-ca`, `pki-export`, and the issuing-CA branch of `pki-revoke`.
 
 This correction was applied in a follow-up PR:
 - Gates restored on `pki-init` and `pki-onboard` (Job B depends on both gates).
@@ -104,4 +104,4 @@ Split `create_issuing_ca` into:
 ## Out of scope
 
 - `pki-issue`, `pki-renew`, `pki-revoke` already run in a single env and do not need this split.
-- `pki-rotate`, `pki-export` are `pki-root`-only. Gates could be dropped there too. Tracked separately.
+- `pki-rotate-root-ca`, `pki-export` are `pki-root`-only. Gates could be dropped there too. Tracked separately.

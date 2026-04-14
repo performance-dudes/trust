@@ -1,24 +1,28 @@
-name: "PKI: Rotate Root CA"
+name: "PKI: Rotate Root CA (cert + key)"
 
-# Rotates the Root CA: generates a fresh Root keypair, re-signs every
-# existing Issuing CA cert with it, and re-encrypts the new Root key
-# with the founders' NEW passphrases.
+# Rotates the Root CA private key + self-signed certificate. The
+# founders' encryption passphrases are NOT rotated — the new Root key
+# is re-encrypted with the same nested passphrases that protected the
+# old one. (Passphrase rotation is a separate concern with a different
+# threat model. Build a pki-rotate-root-secrets workflow when actually
+# needed; YAGNI.)
+#
+# What this changes:
+#   - Root CA private key (new RSA-4096 keypair)
+#   - Root CA self-signed certificate (new signature, new SKI)
+#   - Every Issuing CA cert is re-signed by the new Root (same Issuing
+#     CA pubkey, new Root signature, new serial, new validity)
+#   - Root CRL is re-issued, signed by the new Root key
+#
+# What stays the same:
+#   - Founder Root passphrases (PKI_PASSWORD_FELIXBOEHM/NANTERO1)
+#   - Issuing CA private keys (encrypted in pki-<partner> envs)
+#   - End-entity private keys + certificates (chain to Issuing, not Root)
+#
+# What customers must do after rotation: re-import the new ca-cert.pem
+# into their trust store. All previously-signed PDFs continue to verify.
 #
 # 2-of-2 enforced by gate-felixboehm + gate-nantero1.
-#
-# IMPORTANT — passphrase handover (no inputs).
-# Workflow inputs are visible in run metadata on a public repo, so new
-# passphrases CANNOT be passed as inputs. Instead, both founders set
-# their NEW passphrases as additional env secrets BEFORE triggering:
-#
-#   pki-root / PKI_PASSWORD_FELIXBOEHM_NEW   (set by felixboehm)
-#   pki-root / PKI_PASSWORD_NANTERO1_NEW     (set by nantero1)
-#
-# After this workflow's PR is merged AND ./scripts/sync-keys-from-workflow.sh
-# has updated ROOT_CA_KEY_NESTED_B64, both founders must:
-#   1. Copy each *_NEW value into the canonical PKI_PASSWORD_<FOUNDER> slot.
-#   2. Delete the *_NEW slot.
-# Until step 1 is done the new key is unusable.
 
 on:
   workflow_dispatch:
@@ -63,15 +67,13 @@ jobs:
         run: source .github/pki.sh && verify_environment_policy pki-nantero1
 
   rotate:
-    name: Rotate Root CA
+    name: Rotate Root CA cert + key
     runs-on: ubuntu-latest
     needs: [gate-felixboehm, gate-nantero1]
     environment: pki-root
     env:
       PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}
       PASSWORD_NANTERO1: ${{ secrets.PKI_PASSWORD_NANTERO1 }}
-      NEW_PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM_NEW }}
-      NEW_PASSWORD_NANTERO1: ${{ secrets.PKI_PASSWORD_NANTERO1_NEW }}
       ROOT_CA_KEY_NESTED_B64: ${{ secrets.ROOT_CA_KEY_NESTED_B64 }}
     steps:
       - uses: actions/checkout@v4
@@ -86,14 +88,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: source .github/pki.sh && verify_environment_policy pki-root
-
-      - name: Verify _NEW passphrases are set
-        run: |
-          if [ -z "${NEW_PASSWORD_FELIXBOEHM:-}" ] || [ -z "${NEW_PASSWORD_NANTERO1:-}" ]; then
-            echo "::error::PKI_PASSWORD_FELIXBOEHM_NEW and PKI_PASSWORD_NANTERO1_NEW must both be set in pki-root before triggering rotate."
-            echo "::error::Each founder runs:  echo <new-pass> | gh secret set PKI_PASSWORD_<FOUNDER>_NEW --env pki-root"
-            exit 1
-          fi
 
       - name: Rotate Root CA
         run: |
@@ -116,7 +110,10 @@ jobs:
           generate_rsa_key 4096 "${TMPDIR}/new-root.key"
           create_root_ca "${TMPDIR}/new-root.key" pki/root/ca-cert.pem 3650
 
-          # Re-sign every existing Issuing CA cert with the NEW Root
+          # Re-sign every existing Issuing CA cert with the NEW Root.
+          # Preserves each Issuing CA's pubkey (so Issuing CA private keys
+          # stay valid) but replaces the Root signature, gives a new
+          # serial, and refreshes validity to 5 years from today.
           for issuer_dir in pki/issuers/*/; do
             partner="$(basename "$issuer_dir")"
             issuer_cert="${issuer_dir}issuing-cert.pem"
@@ -140,13 +137,16 @@ jobs:
             echo "Re-signed: $issuer_cert"
           done
 
-          # Re-create empty Root CRL signed by the new Root key
+          # Re-create empty Root CRL signed by the new Root key.
+          # (Old Root CRL contents are meaningless anyway: it listed serials
+          # of revoked Issuing CAs, but every Issuing CA has a new serial now.)
           create_empty_crl "${TMPDIR}/new-root.key" pki/root/ca-cert.pem pki/crl/root-crl.pem 3650
 
-          # Nested-encrypt new Root key with NEW passphrases
+          # Re-encrypt new Root key with the SAME founder passphrases
+          # (no passphrase rotation in this workflow).
           nested_encrypt_both "${TMPDIR}/new-root.key" \
             "${BLOBS}/root-ca-key.nested.enc" \
-            "$NEW_PASSWORD_NANTERO1" "$NEW_PASSWORD_FELIXBOEHM"
+            "$PASSWORD_NANTERO1" "$PASSWORD_FELIXBOEHM"
 
           # Wipe plaintext keys
           secure_wipe "${TMPDIR}/old-root.key"
@@ -174,42 +174,38 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BRANCH="pki/rotate-root-$(date +%Y%m%d-%H%M%S)"
+          BRANCH="pki/rotate-root-ca-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add pki/root/ pki/issuers/ pki/crl/
-          git commit -m "feat: rotate Root CA key
+          git commit -m "feat: rotate Root CA (new key + cert)
 
           Old Root cert archived. All Issuing CAs re-signed with the new Root.
-          End-entity certs unchanged (they chain to Issuing CAs)."
+          End-entity certs unchanged. Founder passphrases unchanged."
           git push -u origin "$BRANCH"
           gh pr create \
-            --title "feat: rotate Root CA key" \
+            --title "feat: rotate Root CA cert + key" \
             --body "## Summary
 
-          Root CA rotated. Old cert archived. All Issuing CAs re-signed with the new Root.
-          End-entity certs are unchanged (they chain to Issuing CAs, not Root).
+          New Root CA private key and self-signed certificate. All Issuing CAs re-signed by the new Root (preserving Issuing CA pubkeys, so each partner's Issuing CA private key remains valid). Founder Root passphrases unchanged.
+
+          End-entity certs are unchanged — they chain to Issuing CAs, not directly to Root.
 
           ## Public files
           - \`pki/root/ca-cert.pem\` — new Root CA certificate
           - \`pki/root/archive/\` — old Root CA cert archived
-          - \`pki/issuers/*/issuing-cert.pem\` — re-signed Issuing CA certs
+          - \`pki/issuers/*/issuing-cert.pem\` — re-signed Issuing CA certs (new serials, new validity, CRLDP/AIA extensions)
           - \`pki/crl/root-crl.pem\` — fresh empty CRL signed by new Root
 
           ## Encrypted Root CA key
-          New nested-encrypted blob uploaded as workflow artifact \`encrypted-keys\`.
+          New nested-encrypted blob uploaded as workflow artifact \`encrypted-keys\`. Encrypted with the SAME founder passphrases as before.
 
-          ## Post-merge follow-up (in order)
+          ## Post-merge follow-up
 
           1. Sync the new encrypted Root blob:
              \`\`\`
              ./scripts/sync-keys-from-workflow.sh ${{ github.run_id }}
              \`\`\`
-          2. Promote the _NEW passphrases to the canonical slots:
-             \`\`\`
-             # In pki-root, copy each _NEW value into its canonical slot,
-             # then delete the _NEW slot. Each founder does their own.
-             # Until both promotions complete, the new Root key cannot be decrypted.
-             \`\`\`
-          3. Both partners verify the chain on \`main\`."
+          2. Both partners verify the chain on \`main\`.
+          3. Notify customers to re-import the new \`ca-cert.pem\` into their trust stores. Previously-signed PDFs continue to verify."
