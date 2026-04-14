@@ -96,7 +96,6 @@ jobs:
           # ── Root CA (RSA-4096, 10 years) ──
           generate_rsa_key 4096 "${TMPDIR}/root-ca.key"
           create_root_ca "${TMPDIR}/root-ca.key" pki/root/ca-cert.pem 3650
-          echo "01" > pki/root/ca-cert.srl
 
           # ── Root CRL (empty) ──
           create_empty_crl "${TMPDIR}/root-ca.key" pki/root/ca-cert.pem \

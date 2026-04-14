@@ -20,7 +20,7 @@ scripts/
   sync-keys-from-workflow.sh   Post-workflow: pulls encrypted-key artifacts and stores as env secrets
 pki/
   root/ca-cert.pem             Root CA public certificate
-  issuers/<partner>/           Per-partner Issuing CA public certs + serial counters
+  issuers/<partner>/           Per-partner Issuing CA public certs
   certs/                       End-entity public certs
   csrs/                        Submitted CSRs (for audit)
   crl/                         Certificate revocation lists (root-crl.pem + <partner>-crl.pem)
@@ -241,13 +241,15 @@ All helpers are idempotent and fail loudly with `set -euo pipefail` (sourced fro
 
 ## Certificate profiles
 
+**Serial numbers.** All issued certs get a 128-bit random serial (RFC 5280 best practice), not a sequential counter. Avoids state-file collisions when multiple certs are issued concurrently, makes serial prediction infeasible.
+
 ### Root CA
 
 - `Subject: CN=Performance Dudes Root CA, O=Performance Dudes`
 - `BasicConstraints: critical, CA:TRUE, pathlen:1`
 - `KeyUsage: critical, keyCertSign, cRLSign`
 - `SubjectKeyIdentifier: hash`
-- RSA-4096, 10-year validity
+- RSA-4096, 10-year validity, self-signed with its own random serial
 
 ### Issuing CA
 
