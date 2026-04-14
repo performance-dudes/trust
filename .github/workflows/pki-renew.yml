@@ -24,24 +24,32 @@ jobs:
     env:
       PASSWORD: ${{ secrets.PKI_PASSWORD }}
       ISSUING_KEY_B64: ${{ secrets.ISSUING_KEY_ENC_B64 }}
+      ISSUER: ${{ inputs.issuer }}
+      CSR_PATH: ${{ inputs.csr_path }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify CSR exists
+      - name: Validate inputs
         run: |
-          if [ ! -f "${{ inputs.csr_path }}" ]; then
-            echo "::error::CSR not found: ${{ inputs.csr_path }}"
+          if ! [[ "$ISSUER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::issuer contains illegal characters: $ISSUER"
+            exit 1
+          fi
+          if ! [[ "$CSR_PATH" =~ ^pki/csrs/[a-zA-Z0-9_.-]+\.csr$ ]]; then
+            echo "::error::csr_path must match pki/csrs/<name>.csr — got: $CSR_PATH"
+            exit 1
+          fi
+          if [ ! -f "$CSR_PATH" ]; then
+            echo "::error::CSR not found: $CSR_PATH"
             exit 1
           fi
 
       - name: Renew certificate
         run: |
           source .github/pki.sh
-          ISSUER="${{ inputs.issuer }}"
-          CSR="${{ inputs.csr_path }}"
 
           # Extract CN from CSR
-          CN="$(openssl req -in "$CSR" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
+          CN="$(openssl req -in "$CSR_PATH" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
           SLUG="$(echo "$CN" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g')"
 
           if [ ! -f "pki/certs/${SLUG}.pem" ]; then
@@ -55,8 +63,8 @@ jobs:
           printf '%s' "$ISSUING_KEY_B64" | base64 -d > "${TMPDIR}/issuing.key.enc"
           pki_decrypt "${TMPDIR}/issuing.key.enc" "${TMPDIR}/issuing.key" "$PASSWORD"
 
-          # Re-sign CSR with Issuing CA
-          openssl x509 -req -in "$CSR" \
+          # Re-sign CSR with Issuing CA (random 128-bit serial)
+          openssl x509 -req -in "$CSR_PATH" \
             -CA "pki/issuers/${ISSUER}/issuing-cert.pem" \
             -CAkey "${TMPDIR}/issuing.key" \
             -set_serial "0x$(openssl rand -hex 16)" \
@@ -67,24 +75,26 @@ jobs:
               "keyUsage=critical,digitalSignature,nonRepudiation" \
               "extendedKeyUsage=emailProtection,1.3.6.1.4.1.311.10.3.12" \
               "subjectKeyIdentifier=hash" \
-              "authorityKeyIdentifier=keyid:always")
+              "authorityKeyIdentifier=keyid:always" \
+              "crlDistributionPoints=URI:${PD_TRUST_REPO_URL_BASE}/pki/crl/${ISSUER}-crl.pem" \
+              "authorityInfoAccess=caIssuers;URI:${PD_TRUST_REPO_URL_BASE}/pki/issuers/${ISSUER}/issuing-cert.pem")
 
           # Wipe
           secure_wipe "${TMPDIR}/issuing.key"
           rm -f "${TMPDIR}/issuing.key.enc"
           rm -rf "${TMPDIR}"
 
-          # Verify
+          # Verify chain
           cat "pki/issuers/${ISSUER}/issuing-cert.pem" pki/root/ca-cert.pem > /tmp/chain.pem
           openssl verify -CAfile /tmp/chain.pem "pki/certs/${SLUG}.pem"
+
+          echo "SLUG=${SLUG}" >> "$GITHUB_ENV"
+          echo "CN=${CN}" >> "$GITHUB_ENV"
 
       - name: Create PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CSR="${{ inputs.csr_path }}"
-          CN="$(openssl req -in "$CSR" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
-          SLUG="$(echo "$CN" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g')"
           BRANCH="pki/renew-${SLUG}-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -94,5 +104,5 @@ jobs:
           git push -u origin "$BRANCH"
           gh pr create \
             --title "feat: renew certificate for ${CN}" \
-            --body "Renewed by: ${{ inputs.issuer }}
+            --body "Renewed by: ${ISSUER}
           Extended validity: 2 years"

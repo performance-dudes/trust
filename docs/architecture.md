@@ -39,7 +39,7 @@ Private key material is never committed here. See [Encryption scheme](#encryptio
 Root CA                (RSA-4096, 10-year validity, 2-of-2 founders)
   |
   +- Issuing CA felixboehm    (RSA-3072, 5-year validity, felixboehm only)
-  |    +- end-entity certs issued by felixboehm (RSA-2048, 1-year validity)
+  |    +- end-entity certs issued by felixboehm (RSA-3072, 2-year validity)
   |
   +- Issuing CA nantero1      (RSA-3072, 5-year validity, nantero1 only)
   |    +- end-entity certs issued by nantero1
@@ -195,19 +195,27 @@ Two jobs gated by the `target_type` input:
 
 ### `pki-rotate` — Rotate the Root CA (2-of-2)
 
-Env: `pki-root`. Takes new passphrases as inputs (temporary — used only for re-encrypting the new Root CA key at the end of the run; each founder updates their env secret afterward).
+Env: `pki-root`. **No `workflow_dispatch` inputs** — workflow inputs persist in run metadata on a public repo, so passphrases are never passed that way. Instead, each founder sets their NEW passphrase as an extra env secret in `pki-root` BEFORE triggering:
 
-1. Decrypt old Root CA key (2-of-2).
+- `PKI_PASSWORD_FELIXBOEHM_NEW` (set by felixboehm)
+- `PKI_PASSWORD_NANTERO1_NEW` (set by nantero1)
+
+The workflow refuses to start if either is missing. Steps:
+
+1. Decrypt old Root CA key (nested, current passphrases).
 2. Generate new Root CA key and self-signed cert.
-3. Re-sign all existing Issuing CA certs with the new Root.
-4. Nested-encrypt new Root CA key with the new passphrases.
-5. Archive the old Root cert under `pki/root/archive/`. Commit and open PR.
+3. Re-sign every existing Issuing CA cert with the new Root (random 128-bit serials, full CRLDP/AIA extensions).
+4. Re-create the empty Root CRL signed by the new key.
+5. Nested-encrypt new Root key with the NEW passphrases.
+6. Archive old Root cert under `pki/root/archive/`. Commit + open PR.
+
+After the PR merges and `sync-keys-from-workflow.sh` updates `ROOT_CA_KEY_NESTED_B64`, each founder must promote their `_NEW` slot into the canonical `PKI_PASSWORD_<FOUNDER>` slot and delete the `_NEW`. Until then the new key cannot be decrypted.
 
 End-entity certs are unchanged — they chain to Issuing CAs, not directly to Root.
 
 ### `pki-export` — Escape Hatch (2-of-2)
 
-Env: `pki-root`. No inputs. Produces a one-time-passphrase-encrypted copy of the Root CA key as a workflow artifact (1-hour expiry); the one-time passphrase is written to the workflow summary (visible only to repo admins). This is the mechanism for reconstituting the PKI outside GitHub if we ever need to leave.
+Env: `pki-root`. No inputs. Produces a downloadable workflow artifact containing the existing nested-encrypted Root CA blob (the same value that lives as `ROOT_CA_KEY_NESTED_B64`). No new passphrase is generated. Both founders use their own existing passphrases out-of-band to decrypt — same protection model as the original blob, no in-repo OTP that would be visible on a public repo.
 
 ## Helper functions (`.github/pki.sh`)
 
@@ -222,13 +230,15 @@ nested_decrypt_outer <in.enc> <intermediate.enc> <outer_pw>
 nested_decrypt_inner <intermediate.enc> <plain> <inner_pw>
 nested_encrypt_inner / nested_encrypt_outer    # multi-phase builds
 
-# Keys and certs
+# Keys and certs (every signing call uses a 128-bit random serial)
 generate_rsa_key <bits> <out.pem>
 create_root_ca <key> <cert_out> <days>
 build_issuing_ca_csr <key> <csr_out> <partner_name>
 sign_issuing_ca_csr <csr> <root_key> <root_cert> <cert_out> <days>
 create_issuing_ca <root_key> <root_cert> <new_key> <cert_out> <partner> <days>   # wrapper
 create_empty_crl <ca_key> <ca_cert> <crl_out> <days>
+add_to_crl <ca_key> <ca_cert> <crl_out> <days> <serial_hex> <subject_dn>
+                                # appends one revocation, persistent index/crlnumber alongside CRL
 
 # Governance
 verify_environment_policy <env_name>       # reads pki-config.sh, queries GitHub API
@@ -249,6 +259,7 @@ All helpers are idempotent and fail loudly with `set -euo pipefail` (sourced fro
 - `BasicConstraints: critical, CA:TRUE, pathlen:1`
 - `KeyUsage: critical, keyCertSign, cRLSign`
 - `SubjectKeyIdentifier: hash`
+- `crlDistributionPoints: URI:https://raw.githubusercontent.com/performance-dudes/trust/main/pki/crl/root-crl.pem`
 - RSA-4096, 10-year validity, self-signed with its own random serial
 
 ### Issuing CA
@@ -258,6 +269,8 @@ All helpers are idempotent and fail loudly with `set -euo pipefail` (sourced fro
 - `KeyUsage: critical, keyCertSign, cRLSign`
 - `SubjectKeyIdentifier: hash`
 - `AuthorityKeyIdentifier: keyid:always` (links to Root)
+- `crlDistributionPoints: URI:.../pki/crl/root-crl.pem`
+- `authorityInfoAccess: caIssuers;URI:.../pki/root/ca-cert.pem`
 - RSA-3072, 5-year validity
 
 ### End-entity
@@ -267,7 +280,9 @@ All helpers are idempotent and fail loudly with `set -euo pipefail` (sourced fro
 - `KeyUsage: digitalSignature, nonRepudiation`
 - `ExtendedKeyUsage: emailProtection, documentSigning`
 - `AuthorityKeyIdentifier` linking to the issuing partner's Issuing CA
-- RSA-2048, 1–2-year validity
+- `crlDistributionPoints: URI:.../pki/crl/<issuer>-crl.pem`
+- `authorityInfoAccess: caIssuers;URI:.../pki/issuers/<issuer>/issuing-cert.pem`
+- RSA-3072 recommended, 2-year validity
 
 ## Tampering protection
 

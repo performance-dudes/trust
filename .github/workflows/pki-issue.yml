@@ -24,37 +24,46 @@ jobs:
     env:
       PASSWORD: ${{ secrets.PKI_PASSWORD }}
       ISSUING_KEY_B64: ${{ secrets.ISSUING_KEY_ENC_B64 }}
+      ISSUER: ${{ inputs.issuer }}
+      CSR_PATH: ${{ inputs.csr_path }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify CSR exists
+      - name: Validate inputs
         run: |
-          if [ ! -f "${{ inputs.csr_path }}" ]; then
-            echo "::error::CSR not found: ${{ inputs.csr_path }}"
+          # Defense in depth: workflow_dispatch triggerers have actions:write,
+          # but a strict allow-list prevents typos and shell injection if the
+          # value were ever interpolated unsafely elsewhere.
+          if ! [[ "$ISSUER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::issuer contains illegal characters: $ISSUER"
+            exit 1
+          fi
+          if ! [[ "$CSR_PATH" =~ ^pki/csrs/[a-zA-Z0-9_.-]+\.csr$ ]]; then
+            echo "::error::csr_path must match pki/csrs/<name>.csr — got: $CSR_PATH"
+            exit 1
+          fi
+          if [ ! -f "$CSR_PATH" ]; then
+            echo "::error::CSR not found: $CSR_PATH"
             exit 1
           fi
 
       - name: Issue certificate
         run: |
           source .github/pki.sh
-          ISSUER="${{ inputs.issuer }}"
-          CSR="${{ inputs.csr_path }}"
 
           TMPDIR="$(mktemp -d)"
 
-          # Decode encrypted Issuing CA key from environment secret
+          # Decode encrypted Issuing CA key from environment secret and decrypt
           printf '%s' "$ISSUING_KEY_B64" | base64 -d > "${TMPDIR}/issuing.key.enc"
-
-          # Decrypt
           pki_decrypt "${TMPDIR}/issuing.key.enc" "${TMPDIR}/issuing.key" "$PASSWORD"
 
           # Extract CN from CSR for output filename
-          CN="$(openssl req -in "$CSR" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
+          CN="$(openssl req -in "$CSR_PATH" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
           SLUG="$(echo "$CN" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g')"
 
-          # Sign CSR
+          # Sign CSR (random 128-bit serial, RFC 5280 best practice)
           mkdir -p pki/certs
-          openssl x509 -req -in "$CSR" \
+          openssl x509 -req -in "$CSR_PATH" \
             -CA "pki/issuers/${ISSUER}/issuing-cert.pem" \
             -CAkey "${TMPDIR}/issuing.key" \
             -set_serial "0x$(openssl rand -hex 16)" \
@@ -65,24 +74,26 @@ jobs:
               "keyUsage=critical,digitalSignature,nonRepudiation" \
               "extendedKeyUsage=emailProtection,1.3.6.1.4.1.311.10.3.12" \
               "subjectKeyIdentifier=hash" \
-              "authorityKeyIdentifier=keyid:always")
+              "authorityKeyIdentifier=keyid:always" \
+              "crlDistributionPoints=URI:${PD_TRUST_REPO_URL_BASE}/pki/crl/${ISSUER}-crl.pem" \
+              "authorityInfoAccess=caIssuers;URI:${PD_TRUST_REPO_URL_BASE}/pki/issuers/${ISSUER}/issuing-cert.pem")
 
           # Wipe
           secure_wipe "${TMPDIR}/issuing.key"
           rm -f "${TMPDIR}/issuing.key.enc"
           rm -rf "${TMPDIR}"
 
-          # Verify
+          # Verify chain
           cat "pki/issuers/${ISSUER}/issuing-cert.pem" pki/root/ca-cert.pem > /tmp/chain.pem
           openssl verify -CAfile /tmp/chain.pem "pki/certs/${SLUG}.pem"
+
+          echo "SLUG=${SLUG}" >> "$GITHUB_ENV"
+          echo "CN=${CN}" >> "$GITHUB_ENV"
 
       - name: Create PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CSR="${{ inputs.csr_path }}"
-          CN="$(openssl req -in "$CSR" -noout -subject -nameopt multiline | grep commonName | sed 's/.*= //')"
-          SLUG="$(echo "$CN" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g')"
           BRANCH="pki/issue-${SLUG}-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -92,7 +103,7 @@ jobs:
           git push -u origin "$BRANCH"
           gh pr create \
             --title "feat: issue certificate for ${CN}" \
-            --body "Issued by: ${{ inputs.issuer }}
-          CSR: \`${CSR}\`
+            --body "Issued by: ${ISSUER}
+          CSR: \`${CSR_PATH}\`
           Subject: ${CN}
           Validity: 2 years"

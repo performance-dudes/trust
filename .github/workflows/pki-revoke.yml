@@ -34,41 +34,49 @@ jobs:
     env:
       PASSWORD: ${{ secrets.PKI_PASSWORD }}
       ISSUING_KEY_B64: ${{ secrets.ISSUING_KEY_ENC_B64 }}
+      TARGET: ${{ inputs.target_name }}
+      ISSUER: ${{ inputs.issuer }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate inputs
+        run: |
+          if ! [[ "$ISSUER" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::issuer contains illegal characters: $ISSUER"
+            exit 1
+          fi
+          if ! [[ "$TARGET" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+            echo "::error::target_name contains illegal characters: $TARGET"
+            exit 1
+          fi
+          if [ ! -f "pki/certs/${TARGET}.pem" ]; then
+            echo "::error::end-entity cert not found: pki/certs/${TARGET}.pem"
+            exit 1
+          fi
 
       - name: Revoke
         run: |
           source .github/pki.sh
-          TARGET="${{ inputs.target_name }}"
-          ISSUER="${{ inputs.issuer }}"
           TMPDIR="$(mktemp -d)"
 
           # Decode encrypted Issuing CA key from environment secret and decrypt
           printf '%s' "$ISSUING_KEY_B64" | base64 -d > "${TMPDIR}/issuing.key.enc"
           pki_decrypt "${TMPDIR}/issuing.key.enc" "${TMPDIR}/issuing.key" "$PASSWORD"
 
+          # Extract serial of the cert being revoked (uppercase hex, no leading 0x)
           SERIAL="$(openssl x509 -in "pki/certs/${TARGET}.pem" -noout -serial | cut -d= -f2)"
+          DN="/CN=${TARGET}"
 
-          CRLDIR="$(mktemp -d)"
-          touch "${CRLDIR}/index.txt"
-          echo "$SERIAL" > "${CRLDIR}/crlnumber"
-          printf '%s\tR\t%s\t%s\tunknown\t/CN=%s\n' \
-            "$SERIAL" "$(date -u +%y%m%d%H%M%SZ)" "$(date -u +%y%m%d%H%M%SZ)" "$TARGET" \
-            >> "${CRLDIR}/index.txt"
+          # Append to the partner's CRL (preserves all prior revocations)
+          add_to_crl "${TMPDIR}/issuing.key" \
+                     "pki/issuers/${ISSUER}/issuing-cert.pem" \
+                     "pki/crl/${ISSUER}-crl.pem" \
+                     1825 \
+                     "$SERIAL" \
+                     "$DN"
 
-          openssl ca -gencrl -keyfile "${TMPDIR}/issuing.key" -cert "pki/issuers/${ISSUER}/issuing-cert.pem" \
-            -out "pki/crl/${ISSUER}-crl.pem" -crldays 1825 \
-            -config <(printf '%s\n' \
-              "[ca]" "default_ca = CA_default" \
-              "[CA_default]" \
-              "database = ${CRLDIR}/index.txt" \
-              "crlnumber = ${CRLDIR}/crlnumber" \
-              "default_md = sha256")
-
-          # Remove cert file
+          # Remove the revoked cert file
           rm -f "pki/certs/${TARGET}.pem"
-          rm -rf "${CRLDIR}"
 
           secure_wipe "${TMPDIR}/issuing.key"
           rm -f "${TMPDIR}/issuing.key.enc"
@@ -78,8 +86,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TARGET="${{ inputs.target_name }}"
-          ISSUER="${{ inputs.issuer }}"
           BRANCH="pki/revoke-${TARGET}-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -129,7 +135,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: source .github/pki.sh && verify_environment_policy pki-nantero1
 
-  # ── 2-of-2: Revoke issuing CA (both partners must approve) ───────────────
+  # ── 2-of-2: Revoke issuing CA ────────────────────────────────────────────
   revoke-issuing-ca:
     name: Revoke issuing CA certificate
     if: ${{ inputs.target_type == 'issuing-ca' }}
@@ -139,7 +145,8 @@ jobs:
     env:
       PASSWORD_FELIXBOEHM: ${{ secrets.PKI_PASSWORD_FELIXBOEHM }}
       PASSWORD_NANTERO1: ${{ secrets.PKI_PASSWORD_NANTERO1 }}
-      ROOT_CA_KEY_B64: ${{ secrets.ROOT_CA_KEY_ENC_B64 }}
+      ROOT_CA_KEY_NESTED_B64: ${{ secrets.ROOT_CA_KEY_NESTED_B64 }}
+      TARGET: ${{ inputs.target_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -154,50 +161,50 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: source .github/pki.sh && verify_environment_policy pki-root
 
+      - name: Validate inputs
+        run: |
+          if ! [[ "$TARGET" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::target_name contains illegal characters: $TARGET"
+            exit 1
+          fi
+          if [ ! -f "pki/issuers/${TARGET}/issuing-cert.pem" ]; then
+            echo "::error::Issuing CA cert not found: pki/issuers/${TARGET}/issuing-cert.pem"
+            exit 1
+          fi
+
       - name: Revoke
         run: |
           source .github/pki.sh
-          TARGET="${{ inputs.target_name }}"
           TMPDIR="$(mktemp -d)"
 
-          # Decode encrypted Root CA key from environment secret and decrypt
-          printf '%s' "$ROOT_CA_KEY_B64" | base64 -d > "${TMPDIR}/root-ca.key.enc"
-          COMBINED=$(derive_combined_passphrase "$PASSWORD_FELIXBOEHM" "$PASSWORD_NANTERO1")
-          pki_decrypt "${TMPDIR}/root-ca.key.enc" "${TMPDIR}/root-ca.key" "$COMBINED"
+          # Decrypt nested Root CA (outer = felixboehm, inner = nantero1)
+          printf '%s' "$ROOT_CA_KEY_NESTED_B64" | base64 -d > "${TMPDIR}/root.nested.enc"
+          nested_decrypt_outer "${TMPDIR}/root.nested.enc" "${TMPDIR}/root.inner.enc" "$PASSWORD_FELIXBOEHM"
+          nested_decrypt_inner "${TMPDIR}/root.inner.enc" "${TMPDIR}/root-ca.key" "$PASSWORD_NANTERO1"
+          rm -f "${TMPDIR}/root.nested.enc" "${TMPDIR}/root.inner.enc"
 
-          # Get serial of the Issuing CA cert
+          # Extract serial of the Issuing CA cert
           SERIAL="$(openssl x509 -in "pki/issuers/${TARGET}/issuing-cert.pem" -noout -serial | cut -d= -f2)"
+          DN="/CN=Performance Dudes Issuing CA - ${TARGET}"
 
-          # Add to root CRL
-          CRLDIR="$(mktemp -d)"
-          touch "${CRLDIR}/index.txt"
-          echo "$SERIAL" > "${CRLDIR}/crlnumber"
-          printf '%s\tR\t%s\t%s\tunknown\t/CN=Performance Dudes Issuing CA - %s\n' \
-            "$SERIAL" "$(date -u +%y%m%d%H%M%SZ)" "$(date -u +%y%m%d%H%M%SZ)" "$TARGET" \
-            >> "${CRLDIR}/index.txt"
+          # Append to the Root CRL (preserves all prior Issuing CA revocations)
+          add_to_crl "${TMPDIR}/root-ca.key" \
+                     pki/root/ca-cert.pem \
+                     pki/crl/root-crl.pem \
+                     3650 \
+                     "$SERIAL" \
+                     "$DN"
 
-          openssl ca -gencrl -keyfile "${TMPDIR}/root-ca.key" -cert pki/root/ca-cert.pem \
-            -out pki/crl/root-crl.pem -crldays 3650 \
-            -config <(printf '%s\n' \
-              "[ca]" "default_ca = CA_default" \
-              "[CA_default]" \
-              "database = ${CRLDIR}/index.txt" \
-              "crlnumber = ${CRLDIR}/crlnumber" \
-              "default_md = sha256")
-
-          # Remove Issuing CA directory
+          # Remove the revoked Issuing CA's directory
           rm -rf "pki/issuers/${TARGET}"
-          rm -rf "${CRLDIR}"
 
           secure_wipe "${TMPDIR}/root-ca.key"
-          rm -f "${TMPDIR}/root-ca.key.enc"
           rm -rf "${TMPDIR}"
 
       - name: Create PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TARGET="${{ inputs.target_name }}"
           BRANCH="pki/revoke-${TARGET}-$(date +%Y%m%d-%H%M%S)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -210,7 +217,7 @@ jobs:
             --body "## Summary
 
           Revoked issuing CA certificate: \`${TARGET}\`
-          Root CRL updated. Issuing CA directory removed from \`pki/issuers/${TARGET}/\`.
+          Root CRL updated (preserves any prior revocations). Issuing CA directory removed from \`pki/issuers/${TARGET}/\`.
 
           ## Manual follow-up required
 
