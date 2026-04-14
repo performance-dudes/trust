@@ -254,7 +254,6 @@ jobs:
 
           mkdir -p "pki/issuers/${PARTNER}" pki/crl
           cp "in/signed-cert/${PARTNER}-issuing-cert.pem" "pki/issuers/${PARTNER}/issuing-cert.pem"
-          echo "01" > "pki/issuers/${PARTNER}/issuing-cert.srl"
 
           TMPDIR="$(mktemp -d)"
           pki_decrypt "in/encrypted-keys/${PARTNER}-issuing-key.enc" "${TMPDIR}/issuing.key" "$PKI_PASSWORD"
@@ -291,7 +290,6 @@ jobs:
 
           ## Public files
           - \`pki/issuers/${PARTNER}/issuing-cert.pem\` — Issuing CA cert
-          - \`pki/issuers/${PARTNER}/issuing-cert.srl\` — serial counter
           - \`pki/crl/${PARTNER}-crl.pem\` — empty CRL
 
           ## Encrypted Issuing CA key

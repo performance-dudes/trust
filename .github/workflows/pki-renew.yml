@@ -59,7 +59,8 @@ jobs:
           openssl x509 -req -in "$CSR" \
             -CA "pki/issuers/${ISSUER}/issuing-cert.pem" \
             -CAkey "${TMPDIR}/issuing.key" \
-            -CAcreateserial -out "pki/certs/${SLUG}.pem" \
+            -set_serial "0x$(openssl rand -hex 16)" \
+            -out "pki/certs/${SLUG}.pem" \
             -days 730 \
             -extfile <(printf '%s\n' \
               "basicConstraints=critical,CA:FALSE" \

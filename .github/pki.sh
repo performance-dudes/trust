@@ -93,7 +93,8 @@ build_issuing_ca_csr() {
 sign_issuing_ca_csr() {
   local csr="$1" root_key="$2" root_cert="$3" cert_out="$4" days="$5"
   openssl x509 -req -in "$csr" -CA "$root_cert" -CAkey "$root_key" \
-    -CAcreateserial -out "$cert_out" -days "$days" \
+    -set_serial "0x$(openssl rand -hex 16)" \
+    -out "$cert_out" -days "$days" \
     -extfile <(printf '%s\n' \
       "basicConstraints=critical,CA:TRUE,pathlen:0" \
       "keyUsage=critical,keyCertSign,cRLSign" \
