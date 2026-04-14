@@ -78,7 +78,7 @@ pki/
 | `pki-renew` | `pki-<github-username>` | 1-of-N | Re-sign a CSR for renewal |
 | `pki-revoke` | tiered | 1-of-N or 2-of-2 | Revoke a cert or Issuing CA |
 | `pki-onboard` | `pki-root` | 2-of-2 | Add a new partner (new Issuing CA) |
-| `pki-rotate` | `pki-root` | 2-of-2 | Rotate the Root CA key |
+| `pki-rotate-root-ca` | `pki-root` | 2-of-2 | Rotate the Root CA cert + key (founder passphrases unchanged) |
 | `pki-export` | `pki-root` | 2-of-2 | Export Root CA for escape hatch |
 
 **PDF signing is NOT a workflow.** It happens locally via the `pd` plugin (coming soon). Signing images and private end-entity keys live on the signer's laptop and never touch GitHub.
@@ -227,10 +227,12 @@ Add them to `.github/pki-partners.sh` and `.github/pki-config.sh` (with their ow
 A new member generates their key pair and CSR locally:
 
 ```bash
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out my-key.pem
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out my-key.pem
 openssl req -new -key my-key.pem -out my.csr \
   -subj "/CN=My Name/emailAddress=me@example.com/O=My Organization"
 ```
+
+(RSA-3072 matches BSI's recommendation for long-term signing keys. RSA-2048 is acceptable but starts losing margin against forward-looking attacks.)
 
 Commit the CSR to the repo (`pki/csrs/my-name.csr`), then trigger:
 
